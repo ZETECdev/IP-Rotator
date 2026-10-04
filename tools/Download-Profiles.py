@@ -54,19 +54,26 @@ def js_fetch(driver, method, path, body=None):
         return res.get("status", 0), {"_raw": (res.get("text") or "")[:200]}
 
 
-def submit_step(driver, field):
+def submit_step(driver, field, wait_for):
     """Submit the form containing `field` without depending on UI language.
 
-    Presses Enter, then falls back to clicking the form's submit button
-    located purely via DOM (never by visible text).
+    Presses Enter and waits for the expected change. Only if nothing
+    happened does it fall back to clicking the form's submit button
+    located purely via DOM (never by visible text). This avoids
+    double-submitting fast transitions.
     """
     from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.support.ui import WebDriverWait
 
     try:
         field.send_keys(Keys.RETURN)
     except Exception:
         pass
-    time.sleep(3)
+    try:
+        WebDriverWait(driver, 10).until(wait_for)
+        return
+    except Exception:
+        pass
     try:
         driver.execute_script(
             """
@@ -96,14 +103,16 @@ def login(driver, username, password):
         EC.presence_of_element_located((By.ID, "username"))
     )
     user_field.send_keys(username)
-    submit_step(driver, user_field)
+    submit_step(driver, user_field,
+                EC.presence_of_element_located((By.ID, "password")))
 
     # Stage 2: Password (id is stable across languages)
     pass_field = WebDriverWait(driver, 60).until(
         EC.presence_of_element_located((By.ID, "password"))
     )
     pass_field.send_keys(password)
-    submit_step(driver, pass_field)
+    submit_step(driver, pass_field,
+                lambda d: "/login" not in d.current_url)
 
     # Logged in = we left /login (2FA/CAPTCHA can be solved manually meanwhile)
     print("If Proton asks for 2FA/CAPTCHA, solve it in the Chrome window...")
@@ -163,7 +172,13 @@ def main():
     try:
         login(driver, username, password)
 
-        status, data = js_fetch(driver, "GET", API_LOGICALS)
+        status, data = 0, {}
+        for _ in range(6):  # session/cookies may need a few seconds after redirect
+            status, data = js_fetch(driver, "GET", API_LOGICALS)
+            if status == 200:
+                break
+            print(f"  API not ready (HTTP {status}), retrying in 5s...")
+            time.sleep(5)
         if status != 200:
             print(f"ERROR fetching server list: HTTP {status} {data}")
             return 1
