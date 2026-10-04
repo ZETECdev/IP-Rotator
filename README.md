@@ -111,13 +111,13 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 Start-IP-Rotator.bat   # self-elevates and starts the rotator
 ```
 
-Edit the settings at the top of `IP-Rotator.ps1`:
+First run asks 3 values in the terminal and saves them to
+`IP-Rotator.config.json` (delete that file to ask again):
 
-```powershell
-[double]$MinutesPerCountry = 1,  # minutes per country (1, 2, 0.5 = 30s)
-[int]$ConnectionTimeoutSec = 10, # skip if slower than this (min 5)
-[string]$ProfilesFolder = "",    # empty = "profiles" next to the script
-[bool]$GapKillSwitch = $true     # block internet during the switch gap
+```
+Minutos por pais [1]                 -> MinutesPerCountry (1, 2, 0.5 = 30s)
+Segundos max para conectar (>=5) [10] -> ConnectionTimeoutSec (min 5)
+Kill-switch en el hueco? (S/N) [S]   -> GapKillSwitch
 ```
 
 Command-line overrides also work:
@@ -145,13 +145,14 @@ Command-line overrides also work:
   server's UDP endpoint + DHCP, adds an allow rule for the tunnel interface
   once it appears, and restores the firewall as soon as the handshake
   succeeds (always restored, even on `Ctrl+C`, via `finally`).
-- Set `GapKillSwitch = $false` if you only want the native protection.
+- Set `GapKillSwitch = false` in `IP-Rotator.config.json` (or `-GapKillSwitch $false`) if you only want the native protection.
 
 ## Files
 
 | File                    | Purpose                                    |
 |-------------------------|--------------------------------------------|
 | `IP-Rotator.ps1`        | Main rotation script                       |
+| `IP-Rotator.config.json`| First-run answers (auto-created, per-machine) |
 | `Start-IP-Rotator.bat`  | Double-click launcher (self-elevates)      |
 | `Install-Autostart.ps1` | Creates the logon scheduled task (self-elevating) |
 | `Remove-Autostart.bat`  | Deletes the scheduled task                 |

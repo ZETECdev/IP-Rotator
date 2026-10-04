@@ -1,18 +1,20 @@
 <# ============================================================
-  IP ROTATOR - EDIT THE SETTINGS BELOW WHEN YOU OPEN THIS FILE
+  IP ROTATOR - FIRST RUN WIZARD (no manual edit needed)
   ============================================================
-  1. Edit the minutes below (MinutesPerCountry).
-  2. Save the file.
-  3. Right click > Run with PowerShell AS ADMINISTRATOR
-     (or double-click Start-IP-Rotator.bat).
+  1. Double-click Start-IP-Rotator.bat (as Administrator).
+  2. First time: it asks 3 values in the terminal and saves
+     them to IP-Rotator.config.json next to this script.
+  3. Next runs: config is loaded automatically. CLI args
+     still override it, e.g.:
+     .\IP-Rotator.ps1 -MinutesPerCountry 2
   Requirements: official WireGuard client + a folder with
   your WireGuard *.conf profiles (e.g. from Proton VPN).
 ============================================================ #>
 param(
-  [double]$MinutesPerCountry = 1,  # <-- EDIT HERE: minutes per country (1, 2, 0.5 = 30s)
-  [int]$ConnectionTimeoutSec = 10, # <-- max seconds to connect; skips to next if slower
-  [string]$ProfilesFolder = "",    # <-- empty = "profiles" folder next to this script
-  [bool]$GapKillSwitch = $true     # <-- true = block internet during the switch gap
+  [double]$MinutesPerCountry = 1,  # default if no config yet (minutes per country: 1, 2, 0.5 = 30s)
+  [int]$ConnectionTimeoutSec = 10, # default if no config yet (min 5)
+  [string]$ProfilesFolder = "",    # empty = "profiles" folder next to this script
+  [bool]$GapKillSwitch = $true     # default if no config yet
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,47 @@ $WireGuardExe = "$env:ProgramFiles\WireGuard\wireguard.exe"
 $WgExe = "$env:ProgramFiles\WireGuard\wg.exe"
 if ([string]::IsNullOrWhiteSpace($ProfilesFolder)) {
   $ProfilesFolder = Join-Path $PSScriptRoot "profiles"
+}
+
+# ---------- first-run wizard: ask once, persist to IP-Rotator.config.json ----------
+$ConfigFile = Join-Path $PSScriptRoot "IP-Rotator.config.json"
+$boundMinutes = $PSBoundParameters.ContainsKey("MinutesPerCountry")
+$boundTimeout = $PSBoundParameters.ContainsKey("ConnectionTimeoutSec")
+$boundGap = $PSBoundParameters.ContainsKey("GapKillSwitch")
+if (Test-Path $ConfigFile) {
+  try {
+    $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    if (-not $boundMinutes -and $null -ne $cfg.MinutesPerCountry) { $MinutesPerCountry = [double]$cfg.MinutesPerCountry }
+    if (-not $boundTimeout -and $null -ne $cfg.ConnectionTimeoutSec) { $ConnectionTimeoutSec = [int]$cfg.ConnectionTimeoutSec }
+    if (-not $boundGap -and $null -ne $cfg.GapKillSwitch) { $GapKillSwitch = [bool]$cfg.GapKillSwitch }
+    Write-Host "[config] loaded from IP-Rotator.config.json"
+  } catch { Write-Host "[config] WARNING: could not read IP-Rotator.config.json, using defaults/args." }
+} else {
+  $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+  $canAsk = $interactive -and -not $boundMinutes -and -not $boundTimeout -and -not $boundGap
+  if ($canAsk) {
+    Write-Host ""
+    Write-Host "=== IP Rotator - primera vez: configura (Enter = valor por defecto) ==="
+    $a = Read-Host "Minutos por pais [$MinutesPerCountry]"
+    if (-not [string]::IsNullOrWhiteSpace($a)) {
+      $v = 0; if ([double]::TryParse($a.Replace(",", "."), [ref]$v) -and $v -gt 0) { $MinutesPerCountry = $v } else { Write-Host "Valor no valido, uso $MinutesPerCountry" }
+    }
+    $b = Read-Host "Segundos max para conectar (>=5) [$ConnectionTimeoutSec]"
+    if (-not [string]::IsNullOrWhiteSpace($b)) {
+      $w = 0; if ([int]::TryParse($b, [ref]$w) -and $w -ge 5) { $ConnectionTimeoutSec = $w } else { Write-Host "Valor no valido, uso $ConnectionTimeoutSec" }
+    }
+    $c = Read-Host "Kill-switch en el hueco? (S/N) [$(if ($GapKillSwitch) { 'S' } else { 'N' })]"
+    if (-not [string]::IsNullOrWhiteSpace($c)) {
+      $c = $c.Trim().ToUpper()
+      if ($c -in @("S", "SI", "Y", "YES", "TRUE", "1")) { $GapKillSwitch = $true }
+      elseif ($c -in @("N", "NO", "FALSE", "0")) { $GapKillSwitch = $false }
+      else { Write-Host "Valor no valido, uso $GapKillSwitch" }
+    }
+  }
+  try {
+    @{ MinutesPerCountry = $MinutesPerCountry; ConnectionTimeoutSec = $ConnectionTimeoutSec; GapKillSwitch = $GapKillSwitch } | ConvertTo-Json | Set-Content $ConfigFile -Encoding Ascii
+    if ($canAsk) { Write-Host "[config] guardado en IP-Rotator.config.json. Borra ese fichero para que pregunte otra vez." }
+  } catch { Write-Host "[config] WARNING: no se pudo guardar IP-Rotator.config.json" }
 }
 
 function Write-Log($m) { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $m" }
