@@ -55,6 +55,23 @@ A sanitized template is included at `profiles/EXAMPLE.example.conf`.
 ⚠️ **Never commit real `.conf` files** — they contain private keys and are
 ignored by `.gitignore` for that reason.
 
+### Bulk download (optional)
+
+Downloading hundreds of servers one by one on the website is painful
+(plus Proton rate-limits generation to ~20 configs per ~20 min).
+`tools/Download-Profiles.py` automates it: headed-Chrome login
+(you solve 2FA/CAPTCHA manually, credentials are never stored), then
+N configs per country straight into `profiles/`, with auto-pause on rate
+limits and resume (existing files are skipped).
+
+```powershell
+pip install selenium
+# preview what would be downloaded (no rate-limit cost):
+python tools\Download-Profiles.py --out profiles --per-country 2 --list-only
+# full run (~2 servers x every country):
+python tools\Download-Profiles.py --out profiles --per-country 2
+```
+
 ## Usage
 
 ```powershell
