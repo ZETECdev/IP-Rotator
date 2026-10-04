@@ -39,19 +39,28 @@ def sanitize(name):
 
 def js_fetch(driver, method, path, body=None):
     """Run a same-origin fetch() inside the logged-in page. Returns (status, json)."""
+    try:
+        driver.set_script_timeout(60)
+    except Exception:
+        pass
     script = """
-    const [method, path, body] = arguments;
+    const [method, path, body, callback] = arguments;
     const headers = {'Accept': 'application/vnd.protonmail.v1+json'};
     if (body !== null) headers['Content-Type'] = 'application/json';
-    return fetch(path, {method, headers, body, credentials: 'same-origin'})
-      .then(async r => ({status: r.status, text: await r.text()}))
-      .catch(e => ({status: 0, text: String(e)}));
+    fetch(path, {method, headers, body, credentials: 'same-origin'})
+      .then(async r => callback({status: r.status, text: await r.text()}))
+      .catch(e => callback({status: 0, text: String(e)}));
     """
-    res = driver.execute_script(script, method, path, body)
+    try:
+        res = driver.execute_async_script(script, method, path, body)
+    except Exception as e:
+        return 0, {"_error": str(e)[:200]}
     try:
         return res["status"], json.loads(res["text"])
     except Exception:
-        return res.get("status", 0), {"_raw": (res.get("text") or "")[:200]}
+        return res.get("status", 0) if isinstance(res, dict) else 0, {
+            "_raw": str((res.get("text") if isinstance(res, dict) else res) or "")[:200]
+        }
 
 
 def submit_step(driver, field, wait_for):
@@ -172,6 +181,7 @@ def main():
     try:
         login(driver, username, password)
 
+        print("Fetching server list from the API...")
         status, data = 0, {}
         for _ in range(6):  # session/cookies may need a few seconds after redirect
             status, data = js_fetch(driver, "GET", API_LOGICALS)
