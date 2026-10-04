@@ -1,0 +1,4 @@
+# Real WireGuard profiles (*.conf) contain private keys - never commit them.
+profiles/*.conf
+!profiles/*.example.conf
+profiles/*.bak

@@ -1,0 +1,127 @@
+# IP Rotator
+
+Automatically rotate your public IP by cycling through WireGuard VPN
+profiles (e.g. one per country) on Windows. Stay on each location for a
+configurable time, skip any location that is slow to connect, never repeat
+a location until all of them have been used, then shuffle and start over —
+forever, with kill-switch protection and optional auto-start on boot.
+
+## How it works
+
+1. Reads every `*.conf` file in `profiles/` (one WireGuard profile per country/server).
+2. Shuffles them (Fisher-Yates) and connects to each one in turn via the
+   official WireGuard for Windows tunnel service
+   (`wireguard.exe /installtunnelservice`).
+3. A connection is accepted only after a real WireGuard handshake **plus**
+   a working internet check. If that takes longer than
+   `ConnectionTimeoutSec` (default 10 s), the profile is skipped.
+4. Holds the connection for `MinutesPerCountry` (default 1 minute), then
+   moves to the next profile. Once every profile has been used, the list is
+   reshuffled and a new round starts. `Ctrl+C` stops and disconnects cleanly.
+
+> Note: the Proton VPN Windows app has no command line, so this project
+> drives the official WireGuard client directly with your provider's
+> WireGuard configs (Proton VPN, or any WireGuard provider).
+
+## Features
+
+- ⏱️ Configurable time per country (`MinutesPerCountry`)
+- ⏩ Auto-skip slow servers (`ConnectionTimeoutSec`)
+- 🔀 Random order with no repeats until all profiles are used
+- 🛡️ Two-layer kill-switch (native WireGuard + gap firewall block)
+- 🚀 Auto-start on Windows logon (scheduled task)
+- 📝 Simple setup, no dependencies besides WireGuard
+
+## Requirements
+
+- Windows 10/11 with Administrator rights
+- Official WireGuard client:
+  https://download.wireguard.com/windows-client/wireguard-installer.exe
+- One WireGuard `.conf` file per location in `profiles/`
+  (see [Get WireGuard profiles](#get-wireguard-profiles))
+- Close the Proton VPN app (disconnect + quit) so it does not fight over
+  the default route
+
+## Get WireGuard profiles
+
+Using Proton VPN as an example:
+
+1. Go to https://account.protonvpn.com → log in → **Downloads**.
+2. Under **WireGuard configuration**, pick a server and **Generate / Download** it.
+3. Save it as `profiles/CH.conf`, `profiles/ES.conf`, … (short names, no spaces).
+4. Repeat for every country you want to rotate through.
+
+A sanitized template is included at `profiles/EXAMPLE.example.conf`.
+⚠️ **Never commit real `.conf` files** — they contain private keys and are
+ignored by `.gitignore` for that reason.
+
+## Usage
+
+```powershell
+# 1. Test run (right-click PowerShell > Run as administrator):
+Set-ExecutionPolicy Bypass -Scope Process -Force
+.\IP-Rotator.ps1
+
+# 2. Or simply double-click:
+Start-IP-Rotator.bat   # self-elevates and starts the rotator
+```
+
+Edit the settings at the top of `IP-Rotator.ps1`:
+
+```powershell
+[double]$MinutesPerCountry = 1,  # minutes per country (1, 2, 0.5 = 30s)
+[int]$ConnectionTimeoutSec = 10, # skip if slower than this (min 5)
+[string]$ProfilesFolder = "",    # empty = "profiles" next to the script
+[bool]$GapKillSwitch = $true     # block internet during the switch gap
+```
+
+Command-line overrides also work:
+
+```powershell
+.\IP-Rotator.ps1 -MinutesPerCountry 2 -ConnectionTimeoutSec 10
+```
+
+## Auto-start on boot
+
+- Double-click `Install-Autostart.bat` (asks for admin once). It creates a
+  scheduled task named **IP Rotator** that starts ~30 s after logon with
+  highest privileges and restarts itself up to 3 times on failure.
+- Check it with `Win+R > taskschd.msc`.
+- To remove: double-click `Remove-Autostart.bat`.
+
+## Kill-switch
+
+- **While connected:** WireGuard for Windows automatically firewall-blocks
+  leaks whenever a profile routes `0.0.0.0/0`. On first run the script also
+  patches every profile with `BlockUntunneledTraffic = true`
+  (a `.bak` backup is created next to each patched file).
+- **During the 1–2 s switch gap:** with `GapKillSwitch = $true` the script
+  sets the firewall default outbound action to Block, allows only the next
+  server's UDP endpoint + DHCP, adds an allow rule for the tunnel interface
+  once it appears, and restores the firewall as soon as the handshake
+  succeeds (always restored, even on `Ctrl+C`, via `finally`).
+- Set `GapKillSwitch = $false` if you only want the native protection.
+
+## Files
+
+| File                    | Purpose                                    |
+|-------------------------|--------------------------------------------|
+| `IP-Rotator.ps1`        | Main rotation script                       |
+| `Start-IP-Rotator.bat`  | Double-click launcher (self-elevates)      |
+| `Install-Autostart.ps1` / `.bat` | Creates the logon scheduled task   |
+| `Remove-Autostart.bat`  | Deletes the scheduled task                 |
+| `profiles/`             | Your `*.conf` files (never committed)      |
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `ERROR: run AS ADMINISTRATOR` | Right-click PowerShell > Run as administrator |
+| `ERROR: no *.conf in ...` | Put your `.conf` files in `profiles/` |
+| `TIMEOUT, skipping` for all | Check internet/DNS, close Proton app, verify WireGuard installed, try raising `ConnectionTimeoutSec` |
+| No internet after `Ctrl+C` | The script restores the firewall in `finally`; if the window was killed, run `Remove-NetFirewallRule -DisplayName "IPRotator-*"` as admin and check `Get-NetFirewallProfile` default actions |
+| Task does not start at boot | Re-run `Install-Autostart.bat`, check `taskschd.msc` > **IP Rotator** > History |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
