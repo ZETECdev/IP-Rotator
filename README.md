@@ -6,6 +6,11 @@ configurable time, skip any location that is slow to connect, never repeat
 a location until all of them have been used, then shuffle and start over —
 forever, with kill-switch protection and optional auto-start on boot.
 
+Designed for a **paid Proton VPN subscription** (Plus/Unlimited or
+equivalent) so the rotator can cycle through the full Plus server fleet.
+A free Proton account also works but only sees the small free pool
+(use `--tier 1` in the downloader).
+
 ## How it works
 
 1. Reads every `*.conf` file in `profiles/` (one WireGuard profile per country/server).
@@ -35,6 +40,9 @@ forever, with kill-switch protection and optional auto-start on boot.
 ## Requirements
 
 - Windows 10/11 with Administrator rights
+- A **paid Proton VPN subscription** (Plus/Unlimited or equivalent) to
+  access the full server fleet (free accounts only get a handful of
+  locations)
 - Official WireGuard client:
   https://download.wireguard.com/windows-client/wireguard-installer.exe
 - One WireGuard `.conf` file per location in `profiles/`
@@ -59,17 +67,37 @@ ignored by `.gitignore` for that reason.
 
 Downloading hundreds of servers one by one on the website is painful
 (plus Proton rate-limits generation to ~20 configs per ~20 min).
-`tools/Download-Profiles.py` automates it: headed-Chrome login
-(you solve 2FA/CAPTCHA manually, credentials are never stored), then
-N configs per country straight into `profiles/`, with auto-pause on rate
-limits and resume (existing files are skipped).
+`tools/Download-Profiles.py` automates it: headed-Chrome login first
+(you solve 2FA/CAPTCHA manually, credentials are never stored), and
+**after login it asks what to download**. Existing `.conf` files are
+never re-downloaded (skipped).
 
 ```powershell
 pip install selenium
+# Interactive (default): login, then pick country / ALL / quit.
+# A country downloads ALL its servers (~1/min to dodge the rate limit),
+# then it asks again for another country.
+python tools\Download-Profiles.py
+```
+
+Menu answers: `ES` (one country), `ES,PT` (several), `ALL` (every
+country/city/server), `Q` (quit). The list shows `total / already
+downloaded` per country. Pause/resume any time with `Ctrl+C`. By default
+it downloads paid (`--tier 2`) servers, matching the paid-subscription
+requirement; free accounts can pass `--tier 1` instead.
+
+Non-interactive (for background runs — the menu needs a terminal):
+
+```powershell
 # preview what would be downloaded (no rate-limit cost):
-python tools\Download-Profiles.py --out profiles --per-country 2 --list-only
-# full run (~2 servers x every country):
-python tools\Download-Profiles.py --out profiles --per-country 2
+python tools\Download-Profiles.py --countries ES,CH,US --per-country 5 --list-only
+# everything, no questions (default --per-country 0 = ALL servers):
+python tools\Download-Profiles.py --all
+# only some countries, limited per country:
+python tools\Download-Profiles.py --countries ES,CH,US --per-country 5
+# force the menu / force batch mode:
+python tools\Download-Profiles.py --interactive
+python tools\Download-Profiles.py --no-interactive
 ```
 
 ## Usage

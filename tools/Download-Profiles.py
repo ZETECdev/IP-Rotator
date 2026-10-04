@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Bulk-download WireGuard .conf profiles from your Proton VPN account.
+r"""Bulk-download WireGuard .conf profiles from your Proton VPN account.
 
 Why: account.protonvpn.com only lets you download one config at a time.
 This script logs you in (headed Chrome, so you can solve 2FA/CAPTCHA
-manually), then generates N configs per country via the same API calls
+manually), then generates configs for ALL servers via the same API calls
 the website itself makes. No credentials are stored anywhere.
 
 Rate limits: Proton allows roughly ~20 generated configs per ~20 minutes.
@@ -11,10 +11,17 @@ The script pauses automatically and resumes (already-downloaded files are
 skipped, so you can stop/resume any time with Ctrl+C).
 
 Requires: pip install selenium   (Chrome is driven automatically)
-Usage (single run downloads everything, pauses alone on rate limits, resumes alone):
-    python tools\Download-Profiles.py
-    python tools\Download-Profiles.py --per-country 2 --list-only
-    python tools\Download-Profiles.py --countries ES,CH,US --per-country 5
+Usage:
+    python tools/Download-Profiles.py
+        Interactive menu: pick a country (downloads ALL its servers,
+        ~1/min to dodge the rate-limit), then it asks again.
+        Options: <code> (e.g. ES), ALL (every country), Q (quit).
+    python tools/Download-Profiles.py --all
+        Non-interactive: download EVERYTHING without asking (for background runs).
+    python tools/Download-Profiles.py --countries ES,CH,US --per-country 5
+    python tools/Download-Profiles.py --per-country 2 --list-only
+    python tools/Download-Profiles.py --per-country 0   (0 = ALL servers, default)
+    python tools/Download-Profiles.py --no-interactive   (batch mode even in terminal)
 """
 import argparse
 import base64
@@ -237,11 +244,185 @@ Endpoint = {peer_ip}:51820
 """
 
 
+RETRY_SEC = 15  # short retry for transient network/driver failures (NOT rate-limit)
+
+
+def is_rate_limit(status, data):
+    """True only for Proton's real quota response (HTTP 429 / Code 2028)."""
+    if status == 429:
+        return True
+    try:
+        if isinstance(data, dict):
+            if data.get("Code") == 2028:
+                return True
+            if "Too many" in str(data.get("Error", "")):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def wait_cooldown(seconds):
+    """Sleep with a visible countdown (prints every minute). Ctrl+C still aborts."""
+    end = time.time() + seconds
+    while True:
+        left = int(end - time.time())
+        if left <= 0:
+            break
+        if left > 60:
+            print(f"  rate-limited by Proton, retrying in ~{left // 60} min ({left}s)...")
+            time.sleep(min(60, left))
+        else:
+            print(f"  rate-limited by Proton, retrying in {left}s...")
+            time.sleep(left)
+
+
+def try_refresh_uid(driver):
+    """Refresh UID from the page's storage. Returns True if it changed."""
+    global UID
+    try:
+        fresh = get_uid_from_storage(driver)
+        if fresh and fresh != UID:
+            UID = fresh
+            print(f"  refreshed uid ({UID[:6]}...), retrying...")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def download_targets(driver, targets, out_dir, delay):
+    """Download .conf for each server in targets. Skips files that exist."""
+    global UID
+    os.makedirs(out_dir, exist_ok=True)
+    done = 0
+    for s in targets:
+        fname = f"{s['EntryCountry']}-{sanitize(s['Name'])}.conf"
+        path = os.path.join(out_dir, fname)
+        if os.path.exists(path):
+            print(f"  skip (exists) {fname}")
+            continue
+        fails = 0
+        ok = False
+        while not ok:
+            st, key = js_fetch(driver, "GET", API_KEY)
+            if st == 401:
+                if try_refresh_uid(driver):
+                    continue
+                print("  session expired, log in again in the Chrome window (60s)...")
+                time.sleep(60)
+                continue
+            if is_rate_limit(st, key):
+                wait_cooldown(COOLDOWN_SEC)
+                fails = 0
+                continue
+            if st != 200:
+                # Transient (HTTP 0 = driver/fetch failed, 5xx, ...): short retry, NO 20-min wait.
+                fails += 1
+                print(f"  keygen HTTP {st} ({str(key)[:160]}), retrying in {RETRY_SEC}s "
+                      f"(attempt {fails}, no cooldown)...")
+                if fails % 3 == 0:
+                    try_refresh_uid(driver)
+                if fails % 5 == 0:
+                    print("  Hint: check the Chrome window (logged in? network OK?). Continuing...")
+                time.sleep(RETRY_SEC)
+                continue
+            try:
+                priv_ec = key["PrivateKey"].split("\n")[1]
+                pub_ec = key["PublicKey"].split("\n")[1]
+            except Exception:
+                fails += 1
+                print(f"  bad key response ({str(key)[:120]}), retrying in {RETRY_SEC}s (attempt {fails})...")
+                time.sleep(RETRY_SEC)
+                continue
+            fails = 0
+            peer = s["Servers"][0]
+            body = json.dumps({
+                "ClientPublicKey": pub_ec,
+                "Mode": "persistent",
+                "DeviceName": f"IPRotator-{sanitize(s['Name'])}"[:64],
+                "Features": {
+                    "peerName": s["Name"],
+                    "peerIp": peer["EntryIP"],
+                    "peerPublicKey": peer["X25519PublicKey"],
+                    "platform": "Windows",
+                },
+            })
+            st, reg = js_fetch(driver, "POST", API_CERT, body)
+            if st == 401:
+                # Session/UID may have rotated: refresh UID automatically first
+                try:
+                    fresh = get_uid_from_storage(driver)
+                    if fresh:
+                        UID = fresh
+                        print(f"  401, refreshed uid ({UID[:6]}...), retrying once...")
+                        st, reg = js_fetch(driver, "POST", API_CERT, body)
+                        if st == 200:
+                            pass  # fall through to save below
+                        else:
+                            print("  session expired, log in again in the Chrome window (60s)...")
+                            time.sleep(60)
+                            continue
+                    else:
+                        print("  session expired, log in again in the Chrome window (60s)...")
+                        time.sleep(60)
+                        continue
+                except Exception:
+                    print("  session expired, log in again in the Chrome window (60s)...")
+                    time.sleep(60)
+                    continue
+                if st == 401:
+                    print("  session expired, log in again in the Chrome window (60s)...")
+                    time.sleep(60)
+                    continue
+            if is_rate_limit(st, reg):
+                wait_cooldown(COOLDOWN_SEC)
+                continue
+            if st != 200:
+                print(f"  register HTTP {st} ({str(reg)[:160]}), retrying in {RETRY_SEC}s (no cooldown)...")
+                time.sleep(RETRY_SEC)
+                continue
+            conf = build_conf(
+                x25519_priv_from_ec(priv_ec),
+                reg["Features"]["peerPublicKey"],
+                reg["Features"]["peerIp"],
+            )
+            with open(path, "w", newline="") as f:
+                f.write(conf)
+            done += 1
+            print(f"  [{done}] saved {fname}")
+            ok = True
+            time.sleep(delay)
+    return done
+
+
+def country_counts(servers):
+    counts = {}
+    for s in servers:
+        cc = (s.get("EntryCountry") or "").upper()
+        counts[cc] = counts.get(cc, 0) + 1
+    return counts
+
+
+def existing_counts(out_dir):
+    counts = {}
+    if not os.path.isdir(out_dir):
+        return counts
+    for fn in os.listdir(out_dir):
+        if fn.lower().endswith(".conf") and "-" in fn:
+            cc = fn.split("-", 1)[0].upper()
+            counts[cc] = counts.get(cc, 0) + 1
+    return counts
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="", help="output folder for .conf files (default: profiles/ next to the repo)")
     ap.add_argument("--countries", default="", help="comma list like ES,CH,US (default: all countries)")
-    ap.add_argument("--per-country", type=int, default=2, help="configs per country")
+    ap.add_argument("--per-country", type=int, default=0, help="configs per country in batch mode (0 = ALL servers of every city/country, default: 0)")
+    ap.add_argument("--all", action="store_true", help="non-interactive: download EVERYTHING without asking (use for background runs)")
+    ap.add_argument("--interactive", action="store_true", help="force country-picker menu even if --countries/--all given")
+    ap.add_argument("--no-interactive", action="store_true", help="never ask, batch mode (default when stdin is not a terminal)")
     ap.add_argument("--tier", type=int, default=2, help="1=Free, 2=Paid")
     ap.add_argument("--standard-only", action="store_true", default=True, help="only non-SecureCore/non-Tor servers (default: True)")
     ap.add_argument("--no-standard-only", action="store_false", dest="standard_only", help="disable standard-only filtering (same as --any-features)")
@@ -315,116 +496,116 @@ def main():
         servers = data.get("LogicalServers", [])
         print(f"Total servers advertised: {len(servers)}")
 
-        want = {c.strip().upper() for c in args.countries.split(",") if c.strip()}
-        per_country = {}
-        targets = []
+        # Eligible = everything matching tier/status/features (no country limit yet)
+        all_eligible = []
         for s in servers:
             if s.get("Status") != 1:
                 continue
             if s.get("Tier") != args.tier:
                 continue
-            cc = (s.get("EntryCountry") or "").upper()
-            if want and cc not in want:
-                continue
             # Features is a bitmask (1=SecureCore, 2=Tor, 4=P2P, 8=Streaming, 16=IPv6...).
-            # Old code required Features==0, but Proton now flags almost every server
-            # with P2P/Streaming/IPv6, leaving only ~27 "pure" servers worldwide.
-            # Standard-only now means: exclude SecureCore (1) and Tor (2) only.
+            # Standard-only means: exclude SecureCore (1) and Tor (2) only.
             if not args.any_features and args.standard_only and ((s.get("Features") or 0) & 3) != 0:
                 continue
-            n = per_country.get(cc, 0)
-            if n >= args.per_country:
-                continue
-            per_country[cc] = n + 1
-            targets.append(s)
-            if len(targets) >= args.max:
-                break
+            all_eligible.append(s)
+        all_eligible.sort(key=lambda s: ((s.get("EntryCountry") or ""), (s.get("Name") or "")))
+        avail = country_counts(all_eligible)
+        print(f"Eligible (tier={args.tier}, standard-only={args.standard_only and not args.any_features}): "
+              f"{len(all_eligible)} servers across {len(avail)} countries.")
 
-        print(f"Selected: {len(targets)} servers across {len(per_country)} countries.")
+        def apply_batch_filter(pool):
+            want = {c.strip().upper() for c in args.countries.split(",") if c.strip()}
+            if args.all:
+                want = set()
+            per_country = {}
+            targets = []
+            limit = args.per_country if args.per_country and args.per_country > 0 else None
+            for s in pool:
+                cc = (s.get("EntryCountry") or "").upper()
+                if want and cc not in want:
+                    continue
+                if limit is not None:
+                    n = per_country.get(cc, 0)
+                    if n >= limit:
+                        continue
+                    per_country[cc] = n + 1
+                else:
+                    per_country[cc] = per_country.get(cc, 0) + 1
+                targets.append(s)
+                if len(targets) >= args.max:
+                    break
+            return targets, per_country
+
         if args.list_only:
+            targets, per_country = apply_batch_filter(all_eligible)
+            print(f"Selected: {len(targets)} servers across {len(per_country)} countries.")
             for s in targets[:50]:
                 print(f"  {s['EntryCountry']}  {s['Name']}")
             if len(targets) > 50:
                 print(f"  ... and {len(targets) - 50} more")
             return 0
 
+        # Interactive? Por defecto SIEMPRE se pregunta tras el login.
+        # Solo se evita con batch flags: --all, --countries, --no-interactive, --list-only.
+        want_cli = {c.strip().upper() for c in args.countries.split(",") if c.strip()}
+        if args.list_only or args.no_interactive or args.all or want_cli:
+            use_menu = True if args.interactive else False
+        else:
+            use_menu = True
+
+        # Pace: batch uses --delay as-is; menu defaults to ~1/min to stay
+        # under Proton's ~20 certs / 20 min limit unless --delay was given.
+        delay_given = "--delay" in sys.argv
+        menu_delay = args.delay if delay_given else 60.0
+
         os.makedirs(args.out, exist_ok=True)
-        done = 0
-        for s in targets:
-            fname = f"{s['EntryCountry']}-{sanitize(s['Name'])}.conf"
-            path = os.path.join(args.out, fname)
-            if os.path.exists(path):
-                print(f"  skip (exists) {fname}")
+
+        if not use_menu:
+            targets, per_country = apply_batch_filter(all_eligible)
+            print(f"Selected: {len(targets)} servers across {len(per_country)} countries "
+                  f"(delay={args.delay}s, existing files are skipped).")
+            done = download_targets(driver, targets, args.out, args.delay)
+            print(f"Done. {done} new configs in {args.out}")
+            return 0
+
+        # ---- Interactive country picker ----
+        print(f"\nMenu pace: 1 server/min (delay={menu_delay}s) to stay under "
+              f"Proton's limit. Override with --delay N.")
+        print("Existing .conf files are NOT downloaded again (skip).")
+        total_done = 0
+        while True:
+            have = existing_counts(args.out)
+            print("\nAvailable countries (code: total / already downloaded):")
+            for cc in sorted(avail):
+                print(f"  {cc}: {avail[cc]} / {have.get(cc, 0)} downloaded")
+            print(f"  ALL: {len(all_eligible)} servers in {len(avail)} countries")
+            try:
+                choice = input("Pick country (code or list e.g. ES,PT), ALL for everything, Q to quit: ").strip().upper()
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting.")
+                break
+            if not choice or choice in ("Q", "QUIT", "EXIT"):
+                break
+            if choice == "ALL":
+                targets = [s for s in all_eligible]
+                print(f"Downloading EVERYTHING: {len(targets)} servers...")
+                total_done += download_targets(driver, targets, args.out, menu_delay)
+                print(f"Finished. {total_done} new in total in {args.out}")
+                break  # ALL covers everything; leave the menu
+            codes = {c.strip().upper() for c in choice.replace(";", ",").split(",") if c.strip()}
+            unknown = [c for c in codes if c not in avail]
+            if unknown:
+                print(f"  Invalid code(s): {', '.join(unknown)}. Pick one from the list or ALL.")
                 continue
-            ok = False
-            while not ok:
-                st, key = js_fetch(driver, "GET", API_KEY)
-                if st != 200:
-                    print(f"  keygen HTTP {st}, cooling down 20 min...")
-                    time.sleep(COOLDOWN_SEC)
-                    continue
-                try:
-                    priv_ec = key["PrivateKey"].split("\n")[1]
-                    pub_ec = key["PublicKey"].split("\n")[1]
-                except Exception:
-                    print(f"  bad key response, cooling down 20 min...")
-                    time.sleep(COOLDOWN_SEC)
-                    continue
-                peer = s["Servers"][0]
-                body = json.dumps({
-                    "ClientPublicKey": pub_ec,
-                    "Mode": "persistent",
-                    "DeviceName": f"IPRotator-{sanitize(s['Name'])}"[:64],
-                    "Features": {
-                        "peerName": s["Name"],
-                        "peerIp": peer["EntryIP"],
-                        "peerPublicKey": peer["X25519PublicKey"],
-                        "platform": "Windows",
-                    },
-                })
-                st, reg = js_fetch(driver, "POST", API_CERT, body)
-                if st == 401:
-                    # Session/UID may have rotated: refresh UID automatically first
-                    try:
-                        fresh = get_uid_from_storage(driver)
-                        if fresh:
-                            UID = fresh
-                            print(f"  401, refreshed uid ({UID[:6]}...), retrying once...")
-                            st, reg = js_fetch(driver, "POST", API_CERT, body)
-                            if st == 200:
-                                pass  # fall through to save below
-                            else:
-                                print("  session expired, log in again in the Chrome window (60s)...")
-                                time.sleep(60)
-                                continue
-                        else:
-                            print("  session expired, log in again in the Chrome window (60s)...")
-                            time.sleep(60)
-                            continue
-                    except Exception:
-                        print("  session expired, log in again in the Chrome window (60s)...")
-                        time.sleep(60)
-                        continue
-                    if st == 401:
-                        print("  session expired, log in again in the Chrome window (60s)...")
-                        time.sleep(60)
-                        continue
-                if st != 200:
-                    print(f"  register HTTP {st} ({str(reg)[:120]}), cooling down 20 min...")
-                    time.sleep(COOLDOWN_SEC)
-                    continue
-                conf = build_conf(
-                    x25519_priv_from_ec(priv_ec),
-                    reg["Features"]["peerPublicKey"],
-                    reg["Features"]["peerIp"],
-                )
-                with open(path, "w", newline="") as f:
-                    f.write(conf)
-                done += 1
-                print(f"  [{done}] saved {fname}")
-                ok = True
-                time.sleep(args.delay)
-        print(f"Done. {done} new configs in {args.out}")
+            targets = [s for s in all_eligible if (s.get("EntryCountry") or "").upper() in codes]
+            if not targets:
+                print("  Nothing to download for that selection.")
+                continue
+            print(f"Downloading {len(targets)} servers from {', '.join(sorted(codes))}...")
+            total_done += download_targets(driver, targets, args.out, menu_delay)
+            print(f"  Done ({', '.join(sorted(codes))}). New this session: {total_done}.")
+            # loop: ask for another country
+        print(f"Done. {total_done} new configs in {args.out}")
         return 0
     finally:
         if args.keep_open and "driver" in dir():
