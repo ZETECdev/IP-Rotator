@@ -1,5 +1,9 @@
 # Installs the "IP Rotator" scheduled task (auto-start at logon).
-# Run this file as Administrator (or use Install-Autostart.bat).
+# Self-elevates to Administrator on double-click.
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+  exit
+}
 $taskName = "IP Rotator"
 $scriptPath = Join-Path $PSScriptRoot "IP-Rotator.ps1"
 

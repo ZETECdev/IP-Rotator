@@ -100,7 +100,7 @@ Command-line overrides also work:
 
 ## Auto-start on boot
 
-- Double-click `Install-Autostart.bat` (asks for admin once). It creates a
+- Right-click `Install-Autostart.ps1` > Run with PowerShell (self-elevates, asks for admin once). It creates a
   scheduled task named **IP Rotator** that starts ~30 s after logon with
   highest privileges and restarts itself up to 3 times on failure.
 - Check it with `Win+R > taskschd.msc`.
@@ -125,7 +125,7 @@ Command-line overrides also work:
 |-------------------------|--------------------------------------------|
 | `IP-Rotator.ps1`        | Main rotation script                       |
 | `Start-IP-Rotator.bat`  | Double-click launcher (self-elevates)      |
-| `Install-Autostart.ps1` / `.bat` | Creates the logon scheduled task   |
+| `Install-Autostart.ps1` | Creates the logon scheduled task (self-elevating) |
 | `Remove-Autostart.bat`  | Deletes the scheduled task                 |
 | `profiles/`             | Your `*.conf` files (never committed)      |
 
@@ -137,7 +137,7 @@ Command-line overrides also work:
 | `ERROR: no *.conf in ...` | Put your `.conf` files in `profiles/` |
 | `TIMEOUT, skipping` for all | Check internet/DNS, close Proton app, verify WireGuard installed, try raising `ConnectionTimeoutSec` |
 | No internet after `Ctrl+C` | The script restores the firewall in `finally`; if the window was killed, run `Remove-NetFirewallRule -DisplayName "IPRotator-*"` as admin and check `Get-NetFirewallProfile` default actions |
-| Task does not start at boot | Re-run `Install-Autostart.bat`, check `taskschd.msc` > **IP Rotator** > History |
+| Task does not start at boot | Re-run `Install-Autostart.ps1`, check `taskschd.msc` > **IP Rotator** > History |
 
 ## License
 
