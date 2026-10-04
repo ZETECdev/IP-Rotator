@@ -54,45 +54,56 @@ def js_fetch(driver, method, path, body=None):
         return res.get("status", 0), {"_raw": (res.get("text") or "")[:200]}
 
 
+def submit_step(driver, field):
+    """Submit the form containing `field` without depending on UI language.
+
+    Presses Enter, then falls back to clicking the form's submit button
+    located purely via DOM (never by visible text).
+    """
+    from selenium.webdriver.common.keys import Keys
+
+    try:
+        field.send_keys(Keys.RETURN)
+    except Exception:
+        pass
+    time.sleep(3)
+    try:
+        driver.execute_script(
+            """
+            const el = arguments[0];
+            const form = el.closest('form') || document.querySelector('form');
+            if (!form) return false;
+            const btn = form.querySelector("button[type='submit']") ||
+                        form.querySelector("button:not([type])") ||
+                        form.querySelector("button");
+            if (btn) { btn.click(); return true; }
+            if (form.requestSubmit) { form.requestSubmit(); return true; }
+            form.submit(); return true;
+            """,
+            field,
+        )
+    except Exception:
+        pass
+
+
 def login(driver, username, password):
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
     driver.get(LOGIN_URL)
-    WebDriverWait(driver, 60).until(
+    user_field = WebDriverWait(driver, 60).until(
         EC.presence_of_element_located((By.ID, "username"))
-    ).send_keys(username)
-    # Language-agnostic advance: Enter first, multilingual button as fallback
-    try:
-        driver.find_element(By.ID, "username").send_keys(Keys.RETURN)
-    except Exception:
-        pass
-    try:
-        driver.find_element(
-            By.XPATH,
-            "//button[contains(text(),'Continue') or contains(text(),'Continuar')]",
-        ).click()
-    except Exception:
-        pass
+    )
+    user_field.send_keys(username)
+    submit_step(driver, user_field)
 
     # Stage 2: Password (id is stable across languages)
-    WebDriverWait(driver, 60).until(
+    pass_field = WebDriverWait(driver, 60).until(
         EC.presence_of_element_located((By.ID, "password"))
-    ).send_keys(password)
-    try:
-        driver.find_element(By.ID, "password").send_keys(Keys.RETURN)
-    except Exception:
-        pass
-    try:
-        driver.find_element(
-            By.XPATH,
-            "//button[contains(text(),'Sign in') or contains(text(),'Iniciar') "
-            "or contains(text(),'Log in') or contains(text(),'Entrar')]",
-        ).click()
-    except Exception:
-        pass
+    )
+    pass_field.send_keys(password)
+    submit_step(driver, pass_field)
 
     # Logged in = we left /login (2FA/CAPTCHA can be solved manually meanwhile)
     print("If Proton asks for 2FA/CAPTCHA, solve it in the Chrome window...")
