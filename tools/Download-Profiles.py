@@ -56,16 +56,48 @@ def js_fetch(driver, method, path, body=None):
 
 def login(driver, username, password):
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
     driver.get(LOGIN_URL)
-    WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.ID, "username"))).send_keys(username)
-    driver.find_element(By.XPATH, "//button[contains(text(),'Continue')]").click()
-    WebDriverWait(driver, 60).until(EC.presence_of_element_located((By.ID, "password"))).send_keys(password)
-    driver.find_element(By.XPATH, "//button[contains(text(),'Sign in')]").click()
+    WebDriverWait(driver, 60).until(
+        EC.presence_of_element_located((By.ID, "username"))
+    ).send_keys(username)
+    # Language-agnostic advance: Enter first, multilingual button as fallback
+    try:
+        driver.find_element(By.ID, "username").send_keys(Keys.RETURN)
+    except Exception:
+        pass
+    try:
+        driver.find_element(
+            By.XPATH,
+            "//button[contains(text(),'Continue') or contains(text(),'Continuar')]",
+        ).click()
+    except Exception:
+        pass
+
+    # Stage 2: Password (id is stable across languages)
+    WebDriverWait(driver, 60).until(
+        EC.presence_of_element_located((By.ID, "password"))
+    ).send_keys(password)
+    try:
+        driver.find_element(By.ID, "password").send_keys(Keys.RETURN)
+    except Exception:
+        pass
+    try:
+        driver.find_element(
+            By.XPATH,
+            "//button[contains(text(),'Sign in') or contains(text(),'Iniciar') "
+            "or contains(text(),'Log in') or contains(text(),'Entrar')]",
+        ).click()
+    except Exception:
+        pass
+
+    # Logged in = we left /login (2FA/CAPTCHA can be solved manually meanwhile)
     print("If Proton asks for 2FA/CAPTCHA, solve it in the Chrome window...")
     WebDriverWait(driver, 300).until(lambda d: "/login" not in d.current_url)
+    time.sleep(3)
     print("Logged in.")
 
 
@@ -102,6 +134,7 @@ def main():
     ap.add_argument("--max", type=int, default=9999)
     ap.add_argument("--list-only", action="store_true", help="list matching servers, download nothing")
     ap.add_argument("--delay", type=float, default=2.0, help="seconds between servers")
+    ap.add_argument("--keep-open", action="store_true", help="leave Chrome open on error for inspection")
     args = ap.parse_args()
 
     from selenium import webdriver
@@ -111,7 +144,10 @@ def main():
     password = getpass.getpass("Proton password (not stored): ")
 
     opts = Options()
+    opts.add_argument("--incognito")
     opts.add_argument("--disable-blink-features=AutomationControlled")
+    if args.keep_open:
+        opts.add_experimental_option("detach", True)
     driver = webdriver.Chrome(options=opts)
     try:
         login(driver, username, password)
@@ -209,10 +245,13 @@ def main():
         print(f"Done. {done} new configs in {args.out}")
         return 0
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        if args.keep_open and "driver" in dir():
+            print("Keeping Chrome open for inspection (--keep-open).")
+        else:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
