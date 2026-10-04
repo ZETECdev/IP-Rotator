@@ -32,17 +32,42 @@ API_LOGICALS = "/api/vpn/logicals"
 API_KEY = "/api/vpn/v1/certificate/key/EC"
 API_CERT = "/api/vpn/v1/certificate"
 COOLDOWN_SEC = 20 * 60
-APPVERSION = None  # captured from the page's own traffic (see capture_appversion)
+APPVERSION = None  # captured from the page's own traffic (see capture_api_headers)
+UID = None  # x-pm-uid, required for all authenticated API calls (rotates per session)
 
 
-def capture_appversion(driver, tries=4):
-    """Read the x-pm-appversion header the web app itself sends.
+def get_uid_from_storage(driver):
+    """Read x-pm-uid from localStorage (ps-1 / any key with UID)."""
+    try:
+        return driver.execute_script(
+            """
+            try {
+              const raw = localStorage.getItem('ps-1');
+              if (raw) { try { const j = JSON.parse(raw); if (j && j.UID) return j.UID; } catch(e){} }
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                try { const v = JSON.parse(localStorage.getItem(k)); if (v && v.UID) return v.UID; } catch(e){}
+              }
+              return null;
+            } catch(e){ return null; }
+            """
+        )
+    except Exception:
+        return None
 
-    The API rejects calls without it, and the value changes per release,
-    so we capture it from real page traffic instead of hardcoding.
+
+def capture_api_headers(driver, tries=4):
+    """Read x-pm-appversion + x-pm-uid the web app itself sends.
+
+    The API rejects calls without them (401 "token no valido"), and both
+    values change (appversion per release, UID per session), so we capture
+    them from real page traffic instead of hardcoding. Falls back to
+    localStorage for UID.
     """
     import json as _json
 
+    appversion = None
+    uid = None
     for _ in range(tries):
         try:
             for entry in driver.get_log("performance"):
@@ -56,12 +81,32 @@ def capture_appversion(driver, tries=4):
                 if "/api/" not in req.get("url", ""):
                     continue
                 for k, v in (req.get("headers") or {}).items():
-                    if k.lower() == "x-pm-appversion" and v:
-                        return v
+                    kl = k.lower()
+                    if kl == "x-pm-appversion" and v and not appversion:
+                        appversion = v
+                    elif kl == "x-pm-uid" and v and not uid:
+                        uid = v
+                if appversion and uid:
+                    break
         except Exception:
             pass
+        if appversion and uid:
+            break
+        # UID is also in localStorage even if no API traffic was captured yet
+        if not uid:
+            uid = get_uid_from_storage(driver)
+        if appversion and uid:
+            break
         time.sleep(3)
-    return None
+    if not uid:
+        uid = get_uid_from_storage(driver)
+    return appversion, uid
+
+
+def capture_appversion(driver, tries=4):
+    """Back-compat wrapper: returns appversion only."""
+    appversion, _ = capture_api_headers(driver, tries=tries)
+    return appversion
 
 
 def sanitize(name):
@@ -75,16 +120,24 @@ def js_fetch(driver, method, path, body=None):
     except Exception:
         pass
     script = """
-    const [method, path, body, appversion, callback] = arguments;
+    const [method, path, body, appversion, uid, callback] = arguments;
     const headers = {'Accept': 'application/vnd.protonmail.v1+json'};
     if (appversion) headers['x-pm-appversion'] = appversion;
+    if (uid) headers['x-pm-uid'] = uid;
     if (body !== null) headers['Content-Type'] = 'application/json';
     fetch(path, {method, headers, body, credentials: 'same-origin'})
       .then(async r => callback({status: r.status, text: await r.text()}))
       .catch(e => callback({status: 0, text: String(e)}));
     """
+    # Refresh UID from storage if we don't have one yet (it rotates per session)
+    global UID
+    if not UID:
+        try:
+            UID = get_uid_from_storage(driver)
+        except Exception:
+            pass
     try:
-        res = driver.execute_async_script(script, method, path, body, APPVERSION)
+        res = driver.execute_async_script(script, method, path, body, APPVERSION, UID)
     except Exception as e:
         return 0, {"_error": str(e)[:200]}
     try:
@@ -190,19 +243,22 @@ def main():
     ap.add_argument("--countries", default="", help="comma list like ES,CH,US (default: all)")
     ap.add_argument("--per-country", type=int, default=2, help="configs per country")
     ap.add_argument("--tier", type=int, default=2, help="1=Free, 2=Paid")
-    ap.add_argument("--standard-only", action="store_true", default=True, help="only standard servers (no SecureCore/Tor/P2P)")
-    ap.add_argument("--any-features", action="store_true", help="include special-feature servers")
+    ap.add_argument("--standard-only", action="store_true", default=True, help="only non-SecureCore/non-Tor servers (default: True)")
+    ap.add_argument("--no-standard-only", action="store_false", dest="standard_only", help="disable standard-only filtering (same as --any-features)")
+    ap.add_argument("--any-features", action="store_true", help="include SecureCore/Tor servers too")
     ap.add_argument("--max", type=int, default=9999)
     ap.add_argument("--list-only", action="store_true", help="list matching servers, download nothing")
     ap.add_argument("--delay", type=float, default=2.0, help="seconds between servers")
     ap.add_argument("--keep-open", action="store_true", help="leave Chrome open on error for inspection")
+    ap.add_argument("--username", default=os.environ.get("PROTON_USER", ""), help="Proton username/email (or set PROTON_USER env)")
+    ap.add_argument("--password", default=os.environ.get("PROTON_PASS", ""), help="Proton password (or set PROTON_PASS env)")
     args = ap.parse_args()
 
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
 
-    username = input("Proton username/email: ").strip()
-    password = getpass.getpass("Proton password (not stored): ")
+    username = (args.username or "").strip() or input("Proton username/email: ").strip()
+    password = args.password or getpass.getpass("Proton password (not stored): ")
 
     opts = Options()
     opts.add_argument("--incognito")
@@ -214,18 +270,23 @@ def main():
     try:
         login(driver, username, password)
 
-        global APPVERSION
+        global APPVERSION, UID
         print("Capturing API headers from page traffic...")
-        APPVERSION = capture_appversion(driver)
-        if not APPVERSION:
+        APPVERSION, UID = capture_api_headers(driver)
+        if not APPVERSION or not UID:
             print("  no API traffic seen yet, opening Downloads to trigger some...")
             driver.get(DOWNLOADS_URL)
             time.sleep(8)
-            APPVERSION = capture_appversion(driver)
+            APPVERSION, UID = capture_api_headers(driver)
         if not APPVERSION:
             print("ERROR: could not capture x-pm-appversion. The site may have changed.")
             return 1
+        if not UID:
+            print("ERROR: could not capture x-pm-uid (login may not have completed).")
+            print("  Tip: re-run with --keep-open and check the Chrome window.")
+            return 1
         print(f"  appversion: {APPVERSION}")
+        print(f"  uid: {UID[:6]}... (captured)")
 
         print("Fetching server list from the API...")
         status, data = 0, {}
@@ -233,7 +294,16 @@ def main():
             status, data = js_fetch(driver, "GET", API_LOGICALS)
             if status == 200:
                 break
-            print(f"  API not ready (HTTP {status}), retrying in 5s...")
+            # UID rotates per session; refresh it from storage on 401
+            if status == 401:
+                try:
+                    fresh = get_uid_from_storage(driver)
+                    if fresh and fresh != UID:
+                        UID = fresh
+                        print(f"  refreshed uid ({UID[:6]}...), retrying...")
+                except Exception:
+                    pass
+            print(f"  API not ready (HTTP {status} {str(data)[:200]}), retrying in 5s...")
             time.sleep(5)
         if status != 200:
             print(f"ERROR fetching server list: HTTP {status} {data}")
@@ -252,7 +322,11 @@ def main():
             cc = (s.get("EntryCountry") or "").upper()
             if want and cc not in want:
                 continue
-            if not args.any_features and args.standard_only and (s.get("Features") or 0) != 0:
+            # Features is a bitmask (1=SecureCore, 2=Tor, 4=P2P, 8=Streaming, 16=IPv6...).
+            # Old code required Features==0, but Proton now flags almost every server
+            # with P2P/Streaming/IPv6, leaving only ~27 "pure" servers worldwide.
+            # Standard-only now means: exclude SecureCore (1) and Tor (2) only.
+            if not args.any_features and args.standard_only and ((s.get("Features") or 0) & 3) != 0:
                 continue
             n = per_country.get(cc, 0)
             if n >= args.per_country:
@@ -306,9 +380,31 @@ def main():
                 })
                 st, reg = js_fetch(driver, "POST", API_CERT, body)
                 if st == 401:
-                    print("  session expired, log in again in the Chrome window (60s)...")
-                    time.sleep(60)
-                    continue
+                    # Session/UID may have rotated: refresh UID automatically first
+                    try:
+                        fresh = get_uid_from_storage(driver)
+                        if fresh:
+                            UID = fresh
+                            print(f"  401, refreshed uid ({UID[:6]}...), retrying once...")
+                            st, reg = js_fetch(driver, "POST", API_CERT, body)
+                            if st == 200:
+                                pass  # fall through to save below
+                            else:
+                                print("  session expired, log in again in the Chrome window (60s)...")
+                                time.sleep(60)
+                                continue
+                        else:
+                            print("  session expired, log in again in the Chrome window (60s)...")
+                            time.sleep(60)
+                            continue
+                    except Exception:
+                        print("  session expired, log in again in the Chrome window (60s)...")
+                        time.sleep(60)
+                        continue
+                    if st == 401:
+                        print("  session expired, log in again in the Chrome window (60s)...")
+                        time.sleep(60)
+                        continue
                 if st != 200:
                     print(f"  register HTTP {st} ({str(reg)[:120]}), cooling down 20 min...")
                     time.sleep(COOLDOWN_SEC)
