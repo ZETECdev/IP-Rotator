@@ -27,10 +27,41 @@ import time
 import getpass
 
 LOGIN_URL = "https://account.protonvpn.com/login"
+DOWNLOADS_URL = "https://account.protonvpn.com/downloads"
 API_LOGICALS = "/api/vpn/logicals"
 API_KEY = "/api/vpn/v1/certificate/key/EC"
 API_CERT = "/api/vpn/v1/certificate"
 COOLDOWN_SEC = 20 * 60
+APPVERSION = None  # captured from the page's own traffic (see capture_appversion)
+
+
+def capture_appversion(driver, tries=4):
+    """Read the x-pm-appversion header the web app itself sends.
+
+    The API rejects calls without it, and the value changes per release,
+    so we capture it from real page traffic instead of hardcoding.
+    """
+    import json as _json
+
+    for _ in range(tries):
+        try:
+            for entry in driver.get_log("performance"):
+                try:
+                    msg = _json.loads(entry["message"])["message"]
+                except Exception:
+                    continue
+                if msg.get("method") != "Network.requestWillBeSent":
+                    continue
+                req = msg.get("params", {}).get("request", {})
+                if "/api/" not in req.get("url", ""):
+                    continue
+                for k, v in (req.get("headers") or {}).items():
+                    if k.lower() == "x-pm-appversion" and v:
+                        return v
+        except Exception:
+            pass
+        time.sleep(3)
+    return None
 
 
 def sanitize(name):
@@ -44,15 +75,16 @@ def js_fetch(driver, method, path, body=None):
     except Exception:
         pass
     script = """
-    const [method, path, body, callback] = arguments;
+    const [method, path, body, appversion, callback] = arguments;
     const headers = {'Accept': 'application/vnd.protonmail.v1+json'};
+    if (appversion) headers['x-pm-appversion'] = appversion;
     if (body !== null) headers['Content-Type'] = 'application/json';
     fetch(path, {method, headers, body, credentials: 'same-origin'})
       .then(async r => callback({status: r.status, text: await r.text()}))
       .catch(e => callback({status: 0, text: String(e)}));
     """
     try:
-        res = driver.execute_async_script(script, method, path, body)
+        res = driver.execute_async_script(script, method, path, body, APPVERSION)
     except Exception as e:
         return 0, {"_error": str(e)[:200]}
     try:
@@ -175,11 +207,25 @@ def main():
     opts = Options()
     opts.add_argument("--incognito")
     opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     if args.keep_open:
         opts.add_experimental_option("detach", True)
     driver = webdriver.Chrome(options=opts)
     try:
         login(driver, username, password)
+
+        global APPVERSION
+        print("Capturing API headers from page traffic...")
+        APPVERSION = capture_appversion(driver)
+        if not APPVERSION:
+            print("  no API traffic seen yet, opening Downloads to trigger some...")
+            driver.get(DOWNLOADS_URL)
+            time.sleep(8)
+            APPVERSION = capture_appversion(driver)
+        if not APPVERSION:
+            print("ERROR: could not capture x-pm-appversion. The site may have changed.")
+            return 1
+        print(f"  appversion: {APPVERSION}")
 
         print("Fetching server list from the API...")
         status, data = 0, {}
