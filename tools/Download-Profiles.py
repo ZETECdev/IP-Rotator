@@ -11,10 +11,10 @@ The script pauses automatically and resumes (already-downloaded files are
 skipped, so you can stop/resume any time with Ctrl+C).
 
 Requires: pip install selenium   (Chrome is driven automatically)
-Usage:
-    python Download-Profiles.py --out ..\\profiles --per-country 2 --list-only
-    python Download-Profiles.py --out ..\\profiles --per-country 2
-    python Download-Profiles.py --out ..\\profiles --countries ES,CH,US --per-country 5
+Usage (single run downloads everything, pauses alone on rate limits, resumes alone):
+    python tools\Download-Profiles.py
+    python tools\Download-Profiles.py --per-country 2 --list-only
+    python tools\Download-Profiles.py --countries ES,CH,US --per-country 5
 """
 import argparse
 import base64
@@ -239,8 +239,8 @@ Endpoint = {peer_ip}:51820
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join("..", "profiles"), help="output folder for .conf files")
-    ap.add_argument("--countries", default="", help="comma list like ES,CH,US (default: all)")
+    ap.add_argument("--out", default="", help="output folder for .conf files (default: profiles/ next to the repo)")
+    ap.add_argument("--countries", default="", help="comma list like ES,CH,US (default: all countries)")
     ap.add_argument("--per-country", type=int, default=2, help="configs per country")
     ap.add_argument("--tier", type=int, default=2, help="1=Free, 2=Paid")
     ap.add_argument("--standard-only", action="store_true", default=True, help="only non-SecureCore/non-Tor servers (default: True)")
@@ -253,6 +253,10 @@ def main():
     ap.add_argument("--username", default=os.environ.get("PROTON_USER", ""), help="Proton username/email (or set PROTON_USER env)")
     ap.add_argument("--password", default=os.environ.get("PROTON_PASS", ""), help="Proton password (or set PROTON_PASS env)")
     args = ap.parse_args()
+    if not args.out:
+        # profiles/ next to the repo root, regardless of cwd:
+        # <root>/tools/Download-Profiles.py -> <root>/profiles
+        args.out = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "profiles"))
 
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
