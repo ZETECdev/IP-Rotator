@@ -140,12 +140,17 @@ Command-line overrides also work:
   leaks whenever a profile routes `0.0.0.0/0`. On first run the script also
   patches every profile with `BlockUntunneledTraffic = true`
   (a `.bak` backup is created next to each patched file).
-- **During the 1–2 s switch gap:** with `GapKillSwitch = $true` the script
-  sets the firewall default outbound action to Block, allows only the next
-  server's UDP endpoint + DHCP, adds an allow rule for the tunnel interface
-  once it appears, and restores the firewall as soon as the handshake
-  succeeds (always restored, even on `Ctrl+C`, via `finally`).
+- **During the 1–2 s switch gap:** with `GapKillSwitch = true` the script
+  sets the firewall default outbound action to Block, allows only VPN UDP +
+  DNS (UDP/TCP 53) + DHCP, adds an allow rule for the tunnel interface
+  (retried ~10 s, then retried inside the wait loop), and restores the
+  firewall as soon as the handshake succeeds (always restored, even on
+  `Ctrl+C`, via `finally`).
 - Set `GapKillSwitch = false` in `IP-Rotator.config.json` (or `-GapKillSwitch $false`) if you only want the native protection.
+- Always stop with `Ctrl+C`, never by closing the window with X:
+  closing the window kills PowerShell without running `finally` and leaves
+  the firewall on Block + the tunnel service installed (no internet, not
+  even Proton VPN can connect).
 
 ## Files
 
@@ -154,6 +159,7 @@ Command-line overrides also work:
 | `IP-Rotator.ps1`        | Main rotation script                       |
 | `IP-Rotator.config.json`| First-run answers (auto-created, per-machine) |
 | `Start-IP-Rotator.bat`  | Double-click launcher (self-elevates)      |
+| `Reset-Network.ps1` / `Reset-Network.bat` | Emergency restore: removes IPRotator rules, sets firewall back to Allow, deletes leftover tunnels, flushes DNS (no reboot) |
 | `Install-Autostart.ps1` | Creates the logon scheduled task (self-elevating) |
 | `Remove-Autostart.bat`  | Deletes the scheduled task                 |
 | `profiles/`             | Your `*.conf` files (never committed)      |
@@ -164,8 +170,8 @@ Command-line overrides also work:
 |---|---|
 | `ERROR: run AS ADMINISTRATOR` | Right-click PowerShell > Run as administrator |
 | `ERROR: no *.conf in ...` | Put your `.conf` files in `profiles/` |
-| `TIMEOUT, skipping` for all | Check internet/DNS, close Proton app, verify WireGuard installed, try raising `ConnectionTimeoutSec` |
-| No internet after `Ctrl+C` | The script restores the firewall in `finally`; if the window was killed, run `Remove-NetFirewallRule -DisplayName "IPRotator-*"` as admin and check `Get-NetFirewallProfile` default actions |
+| `TIMEOUT, skipping` for all | First double-click `Reset-Network.bat`, then check internet/DNS, close Proton app, verify WireGuard installed, try raising `ConnectionTimeoutSec` (old versions blocked DNS, causing false TIMEOUTs on every server) |
+| No internet after `Ctrl+C` / killed window | Double-click `Reset-Network.bat` (no reboot needed). It deletes `IPRotator-*` rules, sets firewall outbound back to Allow, and uninstalls leftover `WireGuardTunnel$*` services |
 | Task does not start at boot | Re-run `Install-Autostart.ps1`, check `taskschd.msc` > **IP Rotator** > History |
 
 ## License

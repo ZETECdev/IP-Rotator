@@ -95,8 +95,10 @@ function Test-Handshake($t) {
   return $false
 }
 function Test-Internet {
-  try { $r = Invoke-WebRequest -Uri "https://api.protonvpn.ch/vpn/location" -TimeoutSec 5 -UseBasicParsing; if ($r.StatusCode -eq 200) { return $true } } catch {}
-  try { $r = Invoke-WebRequest -Uri "https://ifconfig.me/ip" -TimeoutSec 5 -UseBasicParsing; if ($r.StatusCode -eq 200) { return $true } } catch {}
+  # Short timeouts: this runs inside the 1s-poll connect loop,
+  # long timeouts here would blow past ConnectionTimeoutSec.
+  try { $r = Invoke-WebRequest -Uri "https://api.protonvpn.ch/vpn/location" -TimeoutSec 3 -UseBasicParsing; if ($r.StatusCode -eq 200) { return $true } } catch {}
+  try { $r = Invoke-WebRequest -Uri "https://ifconfig.me/ip" -TimeoutSec 3 -UseBasicParsing; if ($r.StatusCode -eq 200) { return $true } } catch {}
   return $false
 }
 function Get-EndpointInfo($conf) {
@@ -129,40 +131,59 @@ function Ensure-KillSwitch($files) {
   }
 }
 
-$script:FwBackup = $null
+$script:FwBaseline = $null
+function Save-FirewallBaseline {
+  if ($script:FwBaseline) { return }
+  try { $script:FwBaseline = Get-NetFirewallProfile -Profile Domain, Private, Public | Select-Object Name, DefaultOutboundAction }
+  catch { Write-Log "WARNING could not read firewall baseline: $($_.Exception.Message)" }
+}
+function Remove-StaleKsRules {
+  try { Get-NetFirewallRule -DisplayName "IPRotator*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue } catch {}
+  foreach ($n in @("IPRotator-KS-Allow-VPN", "IPRotator-KS-Allow-DNS", "IPRotator-KS-Allow-DNS-TCP", "IPRotator-KS-Allow-DHCP", "IPRotator-KS-Allow-TUNNEL")) {
+    try { Remove-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue } catch {}
+  }
+}
 function Enable-GapBlock($tunnel, $ep) {
-  # Blocks default outbound traffic; only the VPN handshake + DHCP pass.
-  # Once the tunnel is up, an allow rule for the tunnel interface is added.
+  # Blocks default outbound traffic; only VPN handshake + DNS + DHCP pass.
+  # Tunnel traffic is allowed separately via Enable-TunnelAllow once the
+  # interface exists. Baseline is saved ONCE so a crash can't overwrite it.
+  # BUGFIX: old code allowed only one resolved endpoint IP and no DNS, so
+  # DNS round-robin or hostname endpoints + the HTTPS internet check failed
+  # every time (TIMEOUT loop). Now we allow the VPN UDP port to any + DNS.
+  Save-FirewallBaseline
   try {
-    $script:FwBackup = Get-NetFirewallProfile -Profile Domain, Private, Public | Select-Object Name, DefaultOutboundAction
+    Remove-StaleKsRules
     Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block
-    if ($ep -and $ep.IP) {
-      New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-VPN" -Direction Outbound -Action Allow -Profile Any -Protocol UDP -RemoteAddress $ep.IP -RemotePort $ep.Port -Enabled True | Out-Null
-    }
+    $port = 51820; if ($ep -and $ep.Port) { $port = [int]$ep.Port }
+    New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-VPN" -Direction Outbound -Action Allow -Profile Any -Protocol UDP -RemotePort $port -Enabled True | Out-Null
+    New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-DNS" -Direction Outbound -Action Allow -Profile Any -Protocol UDP -RemotePort 53 -Enabled True | Out-Null
+    New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-DNS-TCP" -Direction Outbound -Action Allow -Profile Any -Protocol TCP -RemotePort 53 -Enabled True | Out-Null
     New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-DHCP" -Direction Outbound -Action Allow -Profile Any -Protocol UDP -LocalPort 68 -RemotePort 67 -Enabled True | Out-Null
-    Write-Log "Gap kill-switch: firewall locked, VPN/DHCP only."
+    Write-Log "Gap kill-switch: firewall locked (VPN :$port / DNS / DHCP only)."
   } catch { Write-Log "WARNING could not enable gap block: $($_.Exception.Message)" }
 }
 function Enable-TunnelAllow($tunnel) {
+  # The interface appears after the service is installed; retry ~10s.
+  # Returns $true on success so the caller can retry inside the wait loop.
+  # Old code tried only ~5s once, right after install, so the rule often
+  # never existed and the HTTPS check stayed blocked -> false TIMEOUTs.
   try {
-    Remove-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -ErrorAction SilentlyContinue
-    # The interface appears after the service is installed; retry a few times
-    for ($i = 0; $i -lt 10; $i++) {
-      try { New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -Direction Outbound -Action Allow -Profile Any -InterfaceAlias $tunnel -Enabled True | Out-Null; break }
+    try { Remove-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -ErrorAction SilentlyContinue } catch {}
+    for ($i = 0; $i -lt 20; $i++) {
+      try { New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -Direction Outbound -Action Allow -Profile Any -InterfaceAlias $tunnel -Enabled True | Out-Null; return $true }
       catch { Start-Sleep -Milliseconds 500 }
     }
+    Write-Log "WARNING tunnel interface '$tunnel' not found for firewall rule, will retry."
   } catch {}
+  return $false
 }
 function Disable-GapBlock {
-  try { Remove-NetFirewallRule -DisplayName "IPRotator-KS-Allow-VPN" -ErrorAction SilentlyContinue } catch {}
-  try { Remove-NetFirewallRule -DisplayName "IPRotator-KS-Allow-DHCP" -ErrorAction SilentlyContinue } catch {}
-  try { Remove-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -ErrorAction SilentlyContinue } catch {}
-  if ($script:FwBackup) {
+  Remove-StaleKsRules
+  if ($script:FwBaseline) {
     try {
-      foreach ($b in $script:FwBackup) { Set-NetFirewallProfile -Profile $b.Name -DefaultOutboundAction $b.DefaultOutboundAction }
-      $script:FwBackup = $null
+      foreach ($b in $script:FwBaseline) { Set-NetFirewallProfile -Profile $b.Name -DefaultOutboundAction $b.DefaultOutboundAction }
       Write-Log "Gap kill-switch: firewall restored."
-    } catch {}
+    } catch { Write-Log "WARNING could not restore firewall: $($_.Exception.Message)" }
   }
 }
 
@@ -175,6 +196,17 @@ if (-not (Test-Path $ProfilesFolder)) { Write-Log "ERROR: $ProfilesFolder not fo
 $profiles = @(Get-ChildItem -Path $ProfilesFolder -Filter "*.conf" -File)
 if ($profiles.Count -eq 0) { Write-Log "ERROR: no *.conf in $ProfilesFolder."; exit 1 }
 Ensure-KillSwitch $profiles
+# Save firewall baseline once + clean leftovers from a previous crash
+# (killed window leaves DefaultOutboundAction=Block + tunnel service behind).
+Save-FirewallBaseline
+Disable-GapBlock
+try {
+  $leftovers = @(Get-Service -Name "WireGuardTunnel$*" -ErrorAction SilentlyContinue)
+  foreach ($s in $leftovers) {
+    $lt = ($s.Name -replace "^WireGuardTunnel\$", "")
+    if ($lt) { Write-Log "Cleaning leftover tunnel $lt..."; Stop-Tunnel $lt }
+  }
+} catch {}
 
 Write-Log "Countries: $($profiles.Count) | Per country: $MinutesPerCountry min | Timeout: ${ConnectionTimeoutSec}s | Gap-KS: $GapKillSwitch"
 Write-Log "Ctrl+C to stop."
@@ -194,12 +226,17 @@ try {
       if ($GapKillSwitch) { Enable-GapBlock $tunnel $ep }
       & $WireGuardExe /installtunnelservice "$($f.FullName)" 2>&1 | Out-String | ForEach-Object { $t = "$_".Trim(); if ($t) { Write-Log "wg: $t" } }
       $activeTunnel = $tunnel
-      if ($GapKillSwitch) { Enable-TunnelAllow $tunnel }
-      $ok = $false; $t0 = Get-Date
+      if ($GapKillSwitch) { [void](Enable-TunnelAllow $tunnel) }
+      $ok = $false; $t0 = Get-Date; $tunnelOk = -not $GapKillSwitch
       while (((Get-Date) - $t0).TotalSeconds -lt $ConnectionTimeoutSec) {
         Start-Sleep -Seconds 1
+        $elapsed = [int]((Get-Date) - $t0).TotalSeconds
+        if ($elapsed -gt $ConnectionTimeoutSec) { $elapsed = $ConnectionTimeoutSec }
+        # Interface may appear late: keep retrying the TUNNEL allow rule,
+        # otherwise the HTTPS check stays blocked and every server TIMEOUTs.
+        if ($GapKillSwitch -and -not $tunnelOk) { $tunnelOk = Enable-TunnelAllow $tunnel }
         if (Test-Handshake $tunnel -and (Test-Internet)) { $ok = $true; break }
-        Write-Log "  waiting... $([int]((Get-Date)-$t0).TotalSeconds)s/${ConnectionTimeoutSec}s"
+        Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s"
       }
       if ($GapKillSwitch) { Disable-GapBlock }
       if (-not $ok) {
