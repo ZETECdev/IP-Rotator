@@ -228,6 +228,7 @@ try {
       $activeTunnel = $tunnel
       if ($GapKillSwitch) { [void](Enable-TunnelAllow $tunnel) }
       $ok = $false; $t0 = Get-Date; $tunnelOk = -not $GapKillSwitch
+      $sawHandshake = $false
       while (((Get-Date) - $t0).TotalSeconds -lt $ConnectionTimeoutSec) {
         Start-Sleep -Seconds 1
         $elapsed = [int]((Get-Date) - $t0).TotalSeconds
@@ -235,11 +236,30 @@ try {
         # Interface may appear late: keep retrying the TUNNEL allow rule,
         # otherwise the HTTPS check stays blocked and every server TIMEOUTs.
         if ($GapKillSwitch -and -not $tunnelOk) { $tunnelOk = Enable-TunnelAllow $tunnel }
-        if (Test-Handshake $tunnel -and (Test-Internet)) { $ok = $true; break }
-        Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s"
+        $hs = Test-Handshake $tunnel
+        if ($hs) { $sawHandshake = $true }
+        if (-not $hs) { Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s (no handshake yet)"; continue }
+        Write-Log "  handshake OK, checking internet..."
+        if (Test-Internet) { $ok = $true; break }
+        Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s (handshake OK, no internet yet)"
       }
       if ($GapKillSwitch) { Disable-GapBlock }
       if (-not $ok) {
+        if (-not $sawHandshake) {
+          Write-Log "TIMEOUT: no WireGuard handshake for $($f.Name)."
+          try {
+            $svc = Get-Service -Name "WireGuardTunnel`$$tunnel" -ErrorAction SilentlyContinue
+            Write-Log "  diag: service=$($svc.Status) ($($svc.Name))"
+          } catch {}
+          try {
+            $dump = @(& $WgExe show $tunnel 2>&1 | Out-String).Trim()
+            if ($dump) { Write-Log "  diag wg show: $($dump.Substring(0, [Math]::Min(300, $dump.Length)))" }
+            else { Write-Log "  diag wg show: (empty - interface down?)" }
+          } catch { Write-Log "  diag wg show failed" }
+          Write-Log "  TIP: test this .conf in the WireGuard GUI (Import + Activate). If GUI also fails: bad/expired config, UDP blocked, or Proton app fighting. Quit Proton app fully first."
+        } else {
+          Write-Log "TIMEOUT: handshake OK but no internet for $($f.Name)."
+        }
         Write-Log "TIMEOUT, skipping to next."
         Stop-Tunnel $tunnel; $activeTunnel = $null
         continue
