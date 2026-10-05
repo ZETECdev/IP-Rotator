@@ -19,7 +19,9 @@ A free Proton account also works but only sees the small free pool
    (`wireguard.exe /installtunnelservice`).
 3. A connection is accepted only after a real WireGuard handshake **plus**
    a working internet check. If that takes longer than
-   `ConnectionTimeoutSec` (default 10 s), the profile is skipped.
+   `ConnectionTimeoutSec` (default 10 s), the profile is skipped — and
+   deleted when `DeleteFailedProfiles` is true (default), so bad
+   profiles never slow down future rounds.
 4. Holds the connection for `MinutesPerCountry` (default 1 minute), then
    moves to the next profile. Once every profile has been used, the list is
    reshuffled and a new round starts. `Ctrl+C` stops and disconnects cleanly.
@@ -32,6 +34,7 @@ A free Proton account also works but only sees the small free pool
 
 - ⏱️ Configurable time per country (`MinutesPerCountry`)
 - ⏩ Auto-skip slow servers (`ConnectionTimeoutSec`)
+- 🗑️ Auto-delete profiles that fail to connect (`DeleteFailedProfiles`, default Y)
 - 🔀 Random order with no repeats until all profiles are used
 - 🛡️ Two-layer kill-switch (native WireGuard + gap firewall block)
 - 🚀 Auto-start on Windows logon (scheduled task)
@@ -111,19 +114,20 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 Start-IP-Rotator.bat   # self-elevates and starts the rotator
 ```
 
-First run asks 3 values in the terminal and saves them to
+First run asks 4 values in the terminal and saves them to
 `IP-Rotator.config.json` (delete that file to ask again):
 
 ```
 Minutes per country [1]              -> MinutesPerCountry (1, 2, 0.5 = 30s)
 Max seconds to connect (>=5) [10]    -> ConnectionTimeoutSec (min 5)
 Gap kill-switch? (Y/N) [Y]           -> GapKillSwitch
+Delete profiles that fail to connect? (Y/N) [Y] -> DeleteFailedProfiles (bad .conf is deleted, default Y)
 ```
 
 Command-line overrides also work:
 
 ```powershell
-.\IP-Rotator.ps1 -MinutesPerCountry 2 -ConnectionTimeoutSec 10
+.\IP-Rotator.ps1 -MinutesPerCountry 2 -ConnectionTimeoutSec 10 -DeleteFailedProfiles $false
 ```
 
 ## Auto-start on boot

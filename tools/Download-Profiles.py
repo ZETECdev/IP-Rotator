@@ -340,7 +340,7 @@ def download_targets(driver, targets, out_dir, delay):
             body = json.dumps({
                 "ClientPublicKey": pub_ec,
                 "Mode": "persistent",
-                "DeviceName": f"IPRotator-{sanitize(s['Name'])}"[:64],
+                "DeviceName": f"{sanitize(s['Name'])}"[:64],
                 "Features": {
                     "peerName": s["Name"],
                     "peerIp": peer["EntryIP"],

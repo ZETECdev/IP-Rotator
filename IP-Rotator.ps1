@@ -2,7 +2,7 @@
   IP ROTATOR - FIRST RUN WIZARD (no manual edit needed)
   ============================================================
   1. Double-click Start-IP-Rotator.bat (as Administrator).
-  2. First time: it asks 3 values in the terminal and saves
+  2. First time: it asks 4 values in the terminal and saves
      them to IP-Rotator.config.json next to this script.
   3. Next runs: config is loaded automatically. CLI args
      still override it, e.g.:
@@ -14,7 +14,8 @@ param(
   [double]$MinutesPerCountry = 1,  # default if no config yet (minutes per country: 1, 2, 0.5 = 30s)
   [int]$ConnectionTimeoutSec = 10, # default if no config yet (min 5)
   [string]$ProfilesFolder = "",    # empty = "profiles" folder next to this script
-  [bool]$GapKillSwitch = $true     # default if no config yet
+  [bool]$GapKillSwitch = $true,    # default if no config yet
+  [bool]$DeleteFailedProfiles = $true # default if no config yet (auto-delete .conf that fails to connect)
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,17 +30,19 @@ $ConfigFile = Join-Path $PSScriptRoot "IP-Rotator.config.json"
 $boundMinutes = $PSBoundParameters.ContainsKey("MinutesPerCountry")
 $boundTimeout = $PSBoundParameters.ContainsKey("ConnectionTimeoutSec")
 $boundGap = $PSBoundParameters.ContainsKey("GapKillSwitch")
+$boundDel = $PSBoundParameters.ContainsKey("DeleteFailedProfiles")
 if (Test-Path $ConfigFile) {
   try {
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     if (-not $boundMinutes -and $null -ne $cfg.MinutesPerCountry) { $MinutesPerCountry = [double]$cfg.MinutesPerCountry }
     if (-not $boundTimeout -and $null -ne $cfg.ConnectionTimeoutSec) { $ConnectionTimeoutSec = [int]$cfg.ConnectionTimeoutSec }
     if (-not $boundGap -and $null -ne $cfg.GapKillSwitch) { $GapKillSwitch = [bool]$cfg.GapKillSwitch }
+    if (-not $boundDel -and $null -ne $cfg.DeleteFailedProfiles) { $DeleteFailedProfiles = [bool]$cfg.DeleteFailedProfiles }
     Write-Host "[config] loaded from IP-Rotator.config.json"
   } catch { Write-Host "[config] WARNING: could not read IP-Rotator.config.json, using defaults/args." }
 } else {
   $interactive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
-  $canAsk = $interactive -and -not $boundMinutes -and -not $boundTimeout -and -not $boundGap
+  $canAsk = $interactive -and -not $boundMinutes -and -not $boundTimeout -and -not $boundGap -and -not $boundDel
   if ($canAsk) {
     Write-Host ""
     Write-Host "=== IP Rotator - first run: setup (Enter = default) ==="
@@ -58,9 +61,16 @@ if (Test-Path $ConfigFile) {
       elseif ($c -in @("N", "NO", "FALSE", "0")) { $GapKillSwitch = $false }
       else { Write-Host "Invalid value, using $GapKillSwitch" }
     }
+    $d = Read-Host "Delete profiles that fail to connect? (Y/N) [$(if ($DeleteFailedProfiles) { 'Y' } else { 'N' })]"
+    if (-not [string]::IsNullOrWhiteSpace($d)) {
+      $d = $d.Trim().ToUpper()
+      if ($d -in @("S", "SI", "Y", "YES", "TRUE", "1")) { $DeleteFailedProfiles = $true }
+      elseif ($d -in @("N", "NO", "FALSE", "0")) { $DeleteFailedProfiles = $false }
+      else { Write-Host "Invalid value, using $DeleteFailedProfiles" }
+    }
   }
   try {
-    @{ MinutesPerCountry = $MinutesPerCountry; ConnectionTimeoutSec = $ConnectionTimeoutSec; GapKillSwitch = $GapKillSwitch } | ConvertTo-Json | Set-Content $ConfigFile -Encoding Ascii
+    @{ MinutesPerCountry = $MinutesPerCountry; ConnectionTimeoutSec = $ConnectionTimeoutSec; GapKillSwitch = $GapKillSwitch; DeleteFailedProfiles = $DeleteFailedProfiles } | ConvertTo-Json | Set-Content $ConfigFile -Encoding Ascii
     if ($canAsk) { Write-Host "[config] saved to IP-Rotator.config.json. Delete that file to ask again." }
   } catch { Write-Host "[config] WARNING: could not save IP-Rotator.config.json" }
 }
@@ -165,14 +175,20 @@ function Enable-GapBlock($tunnel, $ep) {
   } catch { Write-Log "WARNING could not enable gap block: $($_.Exception.Message)" }
 }
 function Enable-TunnelAllow($tunnel) {
-  # The interface appears after the service is installed; retry ~10s.
+  # The interface appears a bit after the service is installed; retry ~10s.
   # Returns $true on success so the caller can retry inside the wait loop.
-  # Old code tried only ~5s once, right after install, so the rule often
-  # never existed and the HTTPS check stayed blocked -> false TIMEOUTs.
+  # NOTE: "interface not found" on the first tries is EXPECTED and harmless:
+  # the vNIC doesn't exist yet right after /installtunnelservice. We check
+  # Get-NetAdapter first so no red error text is printed; the rule is
+  # created (and the connection succeeds) once the interface appears.
   try {
     try { Remove-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -ErrorAction SilentlyContinue } catch {}
     for ($i = 0; $i -lt 20; $i++) {
-      try { New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -Direction Outbound -Action Allow -Profile Any -InterfaceAlias $tunnel -Enabled True | Out-Null; return $true }
+      try {
+        if (-not (Get-NetAdapter -InterfaceAlias $tunnel -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 500; continue }
+        New-NetFirewallRule -DisplayName "IPRotator-KS-Allow-TUNNEL" -Direction Outbound -Action Allow -Profile Any -InterfaceAlias $tunnel -Enabled True -ErrorAction Stop | Out-Null
+        return $true
+      }
       catch { Start-Sleep -Milliseconds 500 }
     }
     Write-Log "WARNING tunnel interface '$tunnel' not found for firewall rule, will retry."
@@ -210,12 +226,16 @@ try {
   }
 } catch {}
 
-Write-Log "Countries: $($profiles.Count) | Per country: $MinutesPerCountry min | Timeout: ${ConnectionTimeoutSec}s | Gap-KS: $GapKillSwitch"
+Write-Log "Countries: $($profiles.Count) | Per country: $MinutesPerCountry min | Timeout: ${ConnectionTimeoutSec}s | Gap-KS: $GapKillSwitch | DelFailed: $DeleteFailedProfiles"
 Write-Log "Ctrl+C to stop."
 $activeTunnel = $null; $round = 0
 try {
   while ($true) {
     $round++
+    # Re-scan every round so auto-deleted / added profiles take effect immediately.
+    $profiles = @(Get-ChildItem -Path $ProfilesFolder -Filter "*.conf" -File)
+    if ($profiles.Count -eq 0) { Write-Log "ERROR: no *.conf left in $ProfilesFolder (all deleted?). Stopping."; break }
+    Ensure-KillSwitch $profiles
     $order = Get-Shuffled $profiles
     Write-Log "===== ROUND $round (random, no repeats) ====="
     foreach ($f in $order) {
@@ -264,6 +284,12 @@ try {
         }
         Write-Log "TIMEOUT, skipping to next."
         Stop-Tunnel $tunnel; $activeTunnel = $null
+        if ($DeleteFailedProfiles) {
+          try {
+            Remove-Item -LiteralPath $f.FullName -Force
+            Write-Log "Deleted failed profile $($f.Name)."
+          } catch { Write-Log "WARNING could not delete $($f.Name): $($_.Exception.Message)" }
+        }
         continue
       }
       $ip = ""; try { $ip = (Invoke-WebRequest -Uri "https://ifconfig.me/ip" -TimeoutSec 5 -UseBasicParsing).Content.Trim() } catch {}
