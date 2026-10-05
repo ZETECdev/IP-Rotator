@@ -23,8 +23,12 @@ A free Proton account also works but only sees the small free pool
    deleted when `DeleteFailedProfiles` is true (default), so bad
    profiles never slow down future rounds.
 4. Holds the connection for `MinutesPerCountry` (default 1 minute), then
-   moves to the next profile. Once every profile has been used, the list is
-   reshuffled and a new round starts. `Ctrl+C` stops and disconnects cleanly.
+   moves to the next profile. Press `N` (or `Space`/`Enter`) at any time
+   in the open terminal to skip the current server immediately — while
+   connecting or while connected — and jump to the next one (a manual
+   skip never deletes the profile). Once every profile has been used, the
+   list is reshuffled and a new round starts. `Ctrl+C` stops and
+   disconnects cleanly.
 
 > Note: the Proton VPN Windows app has no command line, so this project
 > drives the official WireGuard client directly with your provider's
@@ -34,6 +38,7 @@ A free Proton account also works but only sees the small free pool
 
 - ⏱️ Configurable time per country (`MinutesPerCountry`)
 - ⏩ Auto-skip slow servers (`ConnectionTimeoutSec`)
+- ⏭️ Manual skip: press `N` (or `Space`/`Enter`) in the terminal to jump to the next server immediately (works while connecting and while connected, never deletes the profile)
 - 🗑️ Auto-delete profiles that fail to connect (`DeleteFailedProfiles`, default Y)
 - 🔀 Random order with no repeats until all profiles are used
 - 🛡️ Two-layer kill-switch (native WireGuard + gap firewall block)
@@ -129,6 +134,13 @@ Command-line overrides also work:
 ```powershell
 .\IP-Rotator.ps1 -MinutesPerCountry 2 -ConnectionTimeoutSec 10 -DeleteFailedProfiles $false
 ```
+
+While it runs, the terminal stays open showing the log. Focus that window
+and press `N` (or `Space`/`Enter`) to skip the current server and jump to
+the next one immediately. Manual skips work both while connecting
+(`waiting...`) and while holding a connection, and never delete the
+`.conf` (only automatic `TIMEOUT`s delete when `DeleteFailedProfiles`
+is true).
 
 ## Auto-start on boot
 

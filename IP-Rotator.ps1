@@ -87,6 +87,35 @@ function Get-Shuffled($a) {
 }
 function Get-TunnelName($p) { return [IO.Path]::GetFileNameWithoutExtension($p) }
 
+function Test-SkipRequested {
+  # Non-blocking check: did the user press N / S / Space / Enter / RightArrow?
+  # Safe when running without console (scheduled task) or redirected input.
+  try {
+    if (-not [Environment]::UserInteractive) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+    $found = $false
+    while ([Console]::KeyAvailable) {
+      $k = [Console]::ReadKey($true)
+      $keyName = "$($k.Key)"
+      if ($keyName -in @("N", "S", "Spacebar", "Enter", "RightArrow")) { $found = $true }
+      elseif ($k.KeyChar -in @("n", "N", "s", "S", " ")) { $found = $true }
+    }
+    return $found
+  } catch { return $false }
+}
+function Wait-SecondsWithSkip {
+  param([double]$Seconds = 1)
+  # Sleep in 100ms slices so pressing N reacts fast (~0.1s).
+  # Returns $true if a skip key was pressed during the wait.
+  $slices = [int]([double]$Seconds * 10)
+  if ($slices -lt 1) { $slices = 1 }
+  for ($i = 0; $i -lt $slices; $i++) {
+    if (Test-SkipRequested) { return $true }
+    Start-Sleep -Milliseconds 100
+  }
+  return $false
+}
+
 function Stop-Tunnel($t) {
   if (-not $t) { return }
   try { & $WireGuardExe /uninstalltunnelservice $t 2>&1 | Out-Null } catch {}
@@ -227,7 +256,7 @@ try {
 } catch {}
 
 Write-Log "Countries: $($profiles.Count) | Per country: $MinutesPerCountry min | Timeout: ${ConnectionTimeoutSec}s | Gap-KS: $GapKillSwitch | DelFailed: $DeleteFailedProfiles"
-Write-Log "Ctrl+C to stop."
+Write-Log "Ctrl+C to stop. Press N (or Space/Enter) to skip to the next server."
 $activeTunnel = $null; $round = 0
 try {
   while ($true) {
@@ -237,12 +266,12 @@ try {
     if ($profiles.Count -eq 0) { Write-Log "ERROR: no *.conf left in $ProfilesFolder (all deleted?). Stopping."; break }
     Ensure-KillSwitch $profiles
     $order = Get-Shuffled $profiles
-    Write-Log "===== ROUND $round (random, no repeats) ====="
+    Write-Log "===== ROUND $round (random, no repeats) [N = next server] ====="
     foreach ($f in $order) {
       $tunnel = Get-TunnelName $f.FullName
       $ep = Get-EndpointInfo $f.FullName
       $epLabel = if ($ep) { "$($ep.Host):$($ep.Port)" } else { "unknown-endpoint" }
-      Write-Log "--- $($f.Name) -> $epLabel ---"
+      Write-Log "--- $($f.Name) -> $epLabel (N = skip to next) ---"
       if ($activeTunnel -and $activeTunnel -ne $tunnel) { Stop-Tunnel $activeTunnel; $activeTunnel = $null }
       Stop-Tunnel $tunnel
       if ($GapKillSwitch) { Enable-GapBlock $tunnel $ep }
@@ -250,9 +279,9 @@ try {
       $activeTunnel = $tunnel
       if ($GapKillSwitch) { [void](Enable-TunnelAllow $tunnel) }
       $ok = $false; $t0 = Get-Date; $tunnelOk = -not $GapKillSwitch
-      $sawHandshake = $false
+      $sawHandshake = $false; $skipConnect = $false
       while (((Get-Date) - $t0).TotalSeconds -lt $ConnectionTimeoutSec) {
-        Start-Sleep -Seconds 1
+        if (Wait-SecondsWithSkip 1) { $skipConnect = $true; break }
         $elapsed = [int]((Get-Date) - $t0).TotalSeconds
         if ($elapsed -gt $ConnectionTimeoutSec) { $elapsed = $ConnectionTimeoutSec }
         # Interface may appear late: keep retrying the TUNNEL allow rule,
@@ -260,12 +289,17 @@ try {
         if ($GapKillSwitch -and -not $tunnelOk) { $tunnelOk = Enable-TunnelAllow $tunnel }
         $hs = Test-Handshake $tunnel
         if ($hs) { $sawHandshake = $true }
-        if (-not $hs) { Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s (no handshake yet)"; continue }
+        if (-not $hs) { Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s (no handshake yet, N=next)"; continue }
         Write-Log "  handshake OK, checking internet..."
         if (Test-Internet) { $ok = $true; break }
-        Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s (handshake OK, no internet yet)"
+        Write-Log "  waiting... ${elapsed}s/${ConnectionTimeoutSec}s (handshake OK, no internet yet, N=next)"
       }
       if ($GapKillSwitch) { Disable-GapBlock }
+      if ($skipConnect) {
+        Write-Log "SKIPPED by user (N): switching to next server (profile kept, not deleted)."
+        Stop-Tunnel $tunnel; $activeTunnel = $null
+        continue
+      }
       if (-not $ok) {
         if (-not $sawHandshake) {
           Write-Log "TIMEOUT: no WireGuard handshake for $($f.Name)."
@@ -293,15 +327,17 @@ try {
         continue
       }
       $ip = ""; try { $ip = (Invoke-WebRequest -Uri "https://ifconfig.me/ip" -TimeoutSec 5 -UseBasicParsing).Content.Trim() } catch {}
-      Write-Log "CONNECTED $($f.Name) IP=$ip. Holding $MinutesPerCountry min (native kill-switch active)."
+      Write-Log "CONNECTED $($f.Name) IP=$ip. Holding $MinutesPerCountry min (native kill-switch active). Press N for next server."
       $totalSecs = [int]([double]$MinutesPerCountry * 60)
       $endTime = (Get-Date).AddSeconds($totalSecs)
+      $skipped = $false
       while ((Get-Date) -lt $endTime) {
         $remaining = [int]($endTime - (Get-Date)).TotalSeconds
-        Write-Progress -Activity "Connected $($f.Name) ($ip)" -Status "Switching in ${remaining}s" -PercentComplete ((($totalSecs - $remaining) / $totalSecs) * 100)
-        Start-Sleep -Seconds 1
+        Write-Progress -Activity "Connected $($f.Name) ($ip)" -Status "Switching in ${remaining}s (press N for next)" -PercentComplete ((($totalSecs - $remaining) / $totalSecs) * 100)
+        if (Wait-SecondsWithSkip 1) { $skipped = $true; break }
       }
       Write-Progress -Activity " " -Completed
+      if ($skipped) { Write-Log "SKIPPED by user (N): switching to next server..." }
       Stop-Tunnel $tunnel; $activeTunnel = $null
     }
   }
