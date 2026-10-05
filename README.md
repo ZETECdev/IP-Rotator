@@ -137,9 +137,10 @@ Command-line overrides also work:
 ## Kill-switch
 
 - **While connected:** WireGuard for Windows automatically firewall-blocks
-  leaks whenever a profile routes `0.0.0.0/0`. On first run the script also
-  patches every profile with `BlockUntunneledTraffic = true`
-  (a `.bak` backup is created next to each patched file).
+  leaks whenever a peer routes `0.0.0.0/0` (all these profiles do) — no
+  config key needed. Do NOT add `BlockUntunneledTraffic` to the `.conf`
+  files: older WireGuard versions reject it as invalid and the tunnel
+  never starts (the script removes that line if an old version added it).
 - **During the 1–2 s switch gap:** with `GapKillSwitch = true` the script
   sets the firewall default outbound action to Block, allows only VPN UDP +
   DNS (UDP/TCP 53) + DHCP, adds an allow rule for the tunnel interface

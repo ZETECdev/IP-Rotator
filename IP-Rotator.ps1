@@ -116,17 +116,19 @@ function Get-EndpointInfo($conf) {
   return $null
 }
 function Ensure-KillSwitch($files) {
-  # Native WireGuard for Windows kill-switch: with AllowedIPs 0.0.0.0/0,
-  # the tunnel service already firewall-blocks leaks while connected.
-  # Here we verify that and add an explicit BlockUntunneledTraffic = true.
+  # Native WireGuard for Windows kill-switch is AUTOMATIC whenever a peer
+  # routes 0.0.0.0/0 (firewall rules block leaks while connected).
+  # Do NOT add "BlockUntunneledTraffic" to the .conf files: older WireGuard
+  # versions reject that key as invalid, the tunnel service then never
+  # starts, and every server TIMEOUTs. Self-heal files patched by old
+  # versions of this script by removing that line.
   foreach ($f in $files) {
     $txt = Get-Content $f.FullName -Raw
     if ($txt -notmatch "0\.0\.0\.0/0") { Write-Log "WARNING $($f.Name): no 0.0.0.0/0, native kill-switch does NOT apply."; continue }
-    if ($txt -notmatch "(?im)BlockUntunneledTraffic") {
-      Copy-Item $f.FullName ($f.FullName + ".bak") -Force
-      $txt = $txt -replace "(?im)(\[Interface\])", '$1' + "`r`nBlockUntunneledTraffic = true"
+    if ($txt -match "(?im)^\s*BlockUntunneledTraffic\s*=.*$") {
+      $txt = $txt -replace "(?im)^\s*BlockUntunneledTraffic\s*=.*\r?\n?", ""
       Set-Content $f.FullName $txt -Encoding Ascii
-      Write-Log "Kill-switch enabled for $($f.Name) (.bak backup created)."
+      Write-Log "Removed unsupported BlockUntunneledTraffic from $($f.Name) (native /0 kill-switch still applies)."
     }
   }
 }
