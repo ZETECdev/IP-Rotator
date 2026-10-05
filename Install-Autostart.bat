@@ -6,5 +6,5 @@ if %errorlevel% neq 0 (
   exit /b
 )
 cd /d "%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Autostart.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Autostart.ps1"
 pause

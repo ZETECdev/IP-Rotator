@@ -128,7 +128,7 @@ Command-line overrides also work:
 
 ## Auto-start on boot
 
-- Double-click `Autostart.bat` (self-elevates, asks for admin once). It creates a
+- Double-click `Install-Autostart.bat` (self-elevates, asks for admin once). It creates a
   scheduled task named **IP Rotator** that starts ~30 s after logon with
   highest privileges and restarts itself up to 3 times on failure.
 - Check it with `Win+R > taskschd.msc`.
@@ -161,7 +161,7 @@ Command-line overrides also work:
 | `IP-Rotator.config.json`| First-run answers (auto-created, per-machine) |
 | `Start-IP-Rotator.bat`  | Double-click launcher (self-elevates)      |
 | `Reset-Network.ps1` / `Reset-Network.bat` | Emergency restore: removes IPRotator rules, sets firewall back to Allow, deletes leftover tunnels, flushes DNS (no reboot) |
-| `Autostart.bat` (`Install-Autostart.ps1`) | Double-click to create the logon scheduled task (self-elevating) |
+| `Install-Autostart.bat` (`Autostart.ps1`) | Double-click to create the logon scheduled task (self-elevating) |
 | `Remove-Autostart.bat`  | Deletes the scheduled task                 |
 | `profiles/`             | Your `*.conf` files (never committed)      |
 
