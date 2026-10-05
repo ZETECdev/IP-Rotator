@@ -115,9 +115,9 @@ First run asks 3 values in the terminal and saves them to
 `IP-Rotator.config.json` (delete that file to ask again):
 
 ```
-Minutos por pais [1]                 -> MinutesPerCountry (1, 2, 0.5 = 30s)
-Segundos max para conectar (>=5) [10] -> ConnectionTimeoutSec (min 5)
-Kill-switch en el hueco? (S/N) [S]   -> GapKillSwitch
+Minutes per country [1]              -> MinutesPerCountry (1, 2, 0.5 = 30s)
+Max seconds to connect (>=5) [10]    -> ConnectionTimeoutSec (min 5)
+Gap kill-switch? (Y/N) [Y]           -> GapKillSwitch
 ```
 
 Command-line overrides also work:

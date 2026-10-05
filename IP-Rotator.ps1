@@ -42,27 +42,27 @@ if (Test-Path $ConfigFile) {
   $canAsk = $interactive -and -not $boundMinutes -and -not $boundTimeout -and -not $boundGap
   if ($canAsk) {
     Write-Host ""
-    Write-Host "=== IP Rotator - primera vez: configura (Enter = valor por defecto) ==="
-    $a = Read-Host "Minutos por pais [$MinutesPerCountry]"
+    Write-Host "=== IP Rotator - first run: setup (Enter = default) ==="
+    $a = Read-Host "Minutes per country [$MinutesPerCountry]"
     if (-not [string]::IsNullOrWhiteSpace($a)) {
-      $v = 0; if ([double]::TryParse($a.Replace(",", "."), [ref]$v) -and $v -gt 0) { $MinutesPerCountry = $v } else { Write-Host "Valor no valido, uso $MinutesPerCountry" }
+      $v = 0; if ([double]::TryParse($a.Replace(",", "."), [ref]$v) -and $v -gt 0) { $MinutesPerCountry = $v } else { Write-Host "Invalid value, using $MinutesPerCountry" }
     }
-    $b = Read-Host "Segundos max para conectar (>=5) [$ConnectionTimeoutSec]"
+    $b = Read-Host "Max seconds to connect (>=5) [$ConnectionTimeoutSec]"
     if (-not [string]::IsNullOrWhiteSpace($b)) {
-      $w = 0; if ([int]::TryParse($b, [ref]$w) -and $w -ge 5) { $ConnectionTimeoutSec = $w } else { Write-Host "Valor no valido, uso $ConnectionTimeoutSec" }
+      $w = 0; if ([int]::TryParse($b, [ref]$w) -and $w -ge 5) { $ConnectionTimeoutSec = $w } else { Write-Host "Invalid value, using $ConnectionTimeoutSec" }
     }
-    $c = Read-Host "Kill-switch en el hueco? (S/N) [$(if ($GapKillSwitch) { 'S' } else { 'N' })]"
+    $c = Read-Host "Gap kill-switch? (Y/N) [$(if ($GapKillSwitch) { 'Y' } else { 'N' })]"
     if (-not [string]::IsNullOrWhiteSpace($c)) {
       $c = $c.Trim().ToUpper()
       if ($c -in @("S", "SI", "Y", "YES", "TRUE", "1")) { $GapKillSwitch = $true }
       elseif ($c -in @("N", "NO", "FALSE", "0")) { $GapKillSwitch = $false }
-      else { Write-Host "Valor no valido, uso $GapKillSwitch" }
+      else { Write-Host "Invalid value, using $GapKillSwitch" }
     }
   }
   try {
     @{ MinutesPerCountry = $MinutesPerCountry; ConnectionTimeoutSec = $ConnectionTimeoutSec; GapKillSwitch = $GapKillSwitch } | ConvertTo-Json | Set-Content $ConfigFile -Encoding Ascii
-    if ($canAsk) { Write-Host "[config] guardado en IP-Rotator.config.json. Borra ese fichero para que pregunte otra vez." }
-  } catch { Write-Host "[config] WARNING: no se pudo guardar IP-Rotator.config.json" }
+    if ($canAsk) { Write-Host "[config] saved to IP-Rotator.config.json. Delete that file to ask again." }
+  } catch { Write-Host "[config] WARNING: could not save IP-Rotator.config.json" }
 }
 
 function Write-Log($m) { Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $m" }
