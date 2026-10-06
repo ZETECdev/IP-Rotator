@@ -22,7 +22,7 @@ A free Proton account also works but only sees the small free pool
    `ConnectionTimeoutSec` (default 10 s), the profile is skipped — and
    deleted when `DeleteFailedProfiles` is true (default), so bad
    profiles never slow down future rounds.
-4. Holds the connection for `MinutesPerCountry` (default 1 minute), then
+4. Holds the connection for `MinutesPerCountry` (default 15 minutes), then
    moves to the next profile. Press `N` (or `Space`/`Enter`) at any time
    in the open terminal to skip the current server immediately — while
    connecting or while connected — and jump to the next one (a manual
@@ -123,7 +123,7 @@ First run asks 4 values in the terminal and saves them to
 `IP-Rotator.config.json` (delete that file to ask again):
 
 ```
-Minutes per country [1]              -> MinutesPerCountry (1, 2, 0.5 = 30s)
+Minutes per country [15]             -> MinutesPerCountry (15, 30, 0.5 = 30s)
 Max seconds to connect (>=5) [10]    -> ConnectionTimeoutSec (min 5)
 Gap kill-switch? (Y/N) [Y]           -> GapKillSwitch
 Delete profiles that fail to connect? (Y/N) [Y] -> DeleteFailedProfiles (bad .conf is deleted, default Y)

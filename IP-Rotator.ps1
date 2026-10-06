@@ -11,7 +11,7 @@
   your WireGuard *.conf profiles (e.g. from Proton VPN).
 ============================================================ #>
 param(
-  [double]$MinutesPerCountry = 1,  # default if no config yet (minutes per country: 1, 2, 0.5 = 30s)
+  [double]$MinutesPerCountry = 15,  # default if no config yet (minutes per country: 15, 30, 0.5 = 30s)
   [int]$ConnectionTimeoutSec = 10, # default if no config yet (min 5)
   [string]$ProfilesFolder = "",    # empty = "profiles" folder next to this script
   [bool]$GapKillSwitch = $true,    # default if no config yet
